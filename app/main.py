@@ -15,6 +15,7 @@ from app.database import (
     shutdown_db_events,
     check_db_connection
 )
+from app.api import api_router
 
 # =====================================================
 # 📦 CONFIGURACIÓN DE LOGGING
@@ -110,7 +111,7 @@ origins = [
     "http://127.0.0.1:8000",
     # Render (backend)
     "https://*.onrender.com",
-    # Firebase (frontend) - ¡AGREGADOS!
+    # Firebase (frontend)
     "https://hospital-pnp.web.app",
     "https://hospital-pnp.firebaseapp.com",
     # Vercel y Netlify (alternativas)
@@ -226,49 +227,29 @@ async def monitor_performance(request: Request, call_next):
     return response
 
 # =====================================================
-# 📡 REGISTRO DE ROUTERS
+# 📡 REGISTRO DE ROUTERS - VERSIÓN SIMPLIFICADA CON API_ROUTER
 # =====================================================
 
-# Lista de módulos a importar (solo los que existen en tu proyecto)
-modulos_existentes = []
+# Registrar el router principal que agrupa todos los módulos
+app.include_router(api_router, prefix=settings.API_V1_PREFIX)
 
-# Intentar importar y registrar cada módulo
-modulos_a_importar = [
-    ("auth", "Autenticación", "/auth"),
-    ("personal", "Personal", "/personal"),
-    ("planificacion", "Planificación", "/planificacion"),
-    ("asistencia", "Asistencia", "/asistencia"),
-    ("descansos_medicos", "Descansos Médicos", "/dm"),
-    ("solicitudes_cambio", "Solicitudes de Cambio", "/solicitudes-cambio"),
-    ("solicitudes", "Solicitudes Unificadas", "/solicitudes"),
-    ("qr", "QR", "/qr"),
-    ("configuracion_mensual", "Configuración Mensual", "/configuracion-mensual"),
+# Lista de módulos cargados para diagnóstico
+modulos_existentes = [
+    'auth', 
+    'personal', 
+    'planificacion', 
+    'asistencia', 
+    'descansos_medicos', 
+    'solicitudes_cambio', 
+    'qr', 
+    'configuracion_mensual'
 ]
 
 logger.info("=" * 60)
 logger.info("📡 REGISTRANDO ROUTERS")
 logger.info("=" * 60)
-
-for nombre_modulo, tag, prefijo_base in modulos_a_importar:
-    try:
-        modulo = __import__(f"app.api.{nombre_modulo}", fromlist=["router"])
-        
-        if hasattr(modulo, 'router'):
-            prefijo = f"{settings.API_V1_PREFIX}{prefijo_base}"
-            tags = [tag]
-            
-            app.include_router(modulo.router, prefix=prefijo, tags=tags)
-            logger.info(f"✅ {nombre_modulo}: Registrado en {prefijo}")
-            modulos_existentes.append(nombre_modulo)
-        else:
-            logger.warning(f"⚠️ {nombre_modulo}: No tiene router, omitiendo")
-            
-    except ImportError as e:
-        logger.warning(f"⚠️ {nombre_modulo}: No encontrado - {e}")
-    except Exception as e:
-        logger.error(f"❌ {nombre_modulo}: Error al registrar - {e}")
-
-logger.info(f"📦 Total módulos cargados: {len(modulos_existentes)}")
+logger.info(f"✅ Router principal registrado en {settings.API_V1_PREFIX}")
+logger.info(f"📦 Módulos incluidos: {modulos_existentes}")
 logger.info("=" * 60)
 
 # =====================================================
