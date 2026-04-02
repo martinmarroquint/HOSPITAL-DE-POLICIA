@@ -1,0 +1,18 @@
+# Crear .gitignore con las reglas necesarias
+@"
+.env
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.vscode/
+.idea/
+*.log
+.DS_Store
+env/
+venv/
+"@ | Out-File -FilePath .gitignore -Encoding utf8
+
+# Verificar que se creó correctamente
+cat .gitignore
