@@ -1,0 +1,2 @@
+# Crear archivo .python-version con la versión 3.13 (la que usas localmente)
+echo "3.13" > .python-version
