@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/bin/sh
 
 echo "=============================================="
 echo "🚀 INICIANDO DESPLIEGUE EN RENDER"
@@ -8,30 +8,19 @@ echo "🐍 Python: $(python --version 2>&1)"
 echo "📂 Directorio: $(pwd)"
 echo "=============================================="
 
-# Verificar variables de entorno requeridas
+# Lista de variables requeridas
 REQUIRED_VARS="SUPABASE_DATABASE_URL SUPABASE_DB_HOST SUPABASE_DB_PORT SUPABASE_DB_NAME SUPABASE_DB_USER SUPABASE_DB_PASSWORD JWT_SECRET_KEY"
 
 echo "🔍 Verificando variables de entorno..."
 MISSING_VARS=0
+
 for VAR in $REQUIRED_VARS; do
-    if [ -z "${!VAR}" ]; then
+    eval VALUE=\$$VAR
+    if [ -z "$VALUE" ]; then
         echo "❌ Variable faltante: $VAR"
         MISSING_VARS=$((MISSING_VARS + 1))
     else
-        # Mostrar solo los primeros caracteres por seguridad
-        case "$VAR" in
-            SUPABASE_DATABASE_URL|SUPABASE_DB_PASSWORD|JWT_SECRET_KEY)
-                VALUE="${!VAR}"
-                if [ ${#VALUE} -gt 4 ]; then
-                    echo "✅ $VAR: ****${VALUE: -4}"
-                else
-                    echo "✅ $VAR: ****"
-                fi
-                ;;
-            *)
-                echo "✅ $VAR: ${!VAR}"
-                ;;
-        esac
+        echo "✅ $VAR: Configurada"
     fi
 done
 
@@ -42,7 +31,7 @@ fi
 
 echo "✅ Todas las variables de entorno verificadas"
 
-# Ejecutar migraciones de Alembic (si existe)
+# Ejecutar migraciones de Alembic
 echo ""
 echo "🔄 Ejecutando migraciones de base de datos..."
 if command -v alembic > /dev/null 2>&1; then
@@ -50,7 +39,7 @@ if command -v alembic > /dev/null 2>&1; then
     if [ $? -eq 0 ]; then
         echo "✅ Migraciones ejecutadas correctamente"
     else
-        echo "⚠️  Error en migraciones, continuando con la aplicación..."
+        echo "⚠️  Error en migraciones, continuando..."
     fi
 else
     echo "⚠️  Alembic no encontrado, omitiendo migraciones"
