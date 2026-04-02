@@ -96,7 +96,51 @@ app = FastAPI(
 )
 
 # =====================================================
-# 🚀 MIDDLEWARE CORS MANUAL (PARA PREFLIGHT)
+# 🚀 CONFIGURACIÓN CORS - ACTUALIZADA CON DOMINIOS DE FIREBASE
+# =====================================================
+
+# Orígenes permitidos (incluyendo Firebase y producción)
+origins = [
+    # Desarrollo local
+    "http://localhost:3000",
+    "http://localhost:5173",
+    "http://localhost:8000",
+    "http://127.0.0.1:3000",
+    "http://127.0.0.1:5173",
+    "http://127.0.0.1:8000",
+    # Render (backend)
+    "https://*.onrender.com",
+    # Firebase (frontend) - ¡AGREGADOS!
+    "https://hospital-pnp.web.app",
+    "https://hospital-pnp.firebaseapp.com",
+    # Vercel y Netlify (alternativas)
+    "https://*.vercel.app",
+    "https://*.netlify.app",
+]
+
+# Agregar orígenes de configuración desde settings
+if settings.BACKEND_CORS_ORIGINS:
+    origins.extend([str(origin) for origin in settings.BACKEND_CORS_ORIGINS])
+
+# Eliminar duplicados manteniendo orden
+origins = list(dict.fromkeys(origins))
+
+# Configuración CORS con FastAPI
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+    expose_headers=["*"],
+    max_age=3600,
+)
+
+logger.info(f"✅ CORS configurado con {len(origins)} orígenes")
+logger.info(f"📋 Orígenes permitidos: {origins}")
+
+# =====================================================
+# 🚀 MIDDLEWARE CORS MANUAL PARA PREFLIGHT (RESPUESTA RÁPIDA)
 # =====================================================
 
 @app.middleware("http")
@@ -111,7 +155,7 @@ async def cors_middleware(request: Request, call_next):
             headers={
                 "Access-Control-Allow-Origin": "*",
                 "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS, PATCH",
-                "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Requested-With",
+                "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Requested-With, Accept",
                 "Access-Control-Allow-Credentials": "true",
                 "Access-Control-Max-Age": "3600",
             }
@@ -120,48 +164,21 @@ async def cors_middleware(request: Request, call_next):
     # Procesar la solicitud normal
     response = await call_next(request)
     
-    # Agregar headers CORS a todas las respuestas
-    response.headers["Access-Control-Allow-Origin"] = "*"
+    # Obtener el origen de la solicitud para respuesta específica
+    origin = request.headers.get("origin")
+    
+    # Si el origen está en nuestra lista, responder con ese origen específico
+    if origin in origins:
+        response.headers["Access-Control-Allow-Origin"] = origin
+    else:
+        # Fallback: permitir cualquier origen (solo para desarrollo)
+        response.headers["Access-Control-Allow-Origin"] = "*"
+    
     response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS, PATCH"
-    response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization, X-Requested-With"
+    response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization, X-Requested-With, Accept"
     response.headers["Access-Control-Allow-Credentials"] = "true"
     
     return response
-
-# =====================================================
-# 🚀 CONFIGURACIÓN CORS ADICIONAL
-# =====================================================
-
-# Orígenes permitidos (incluyendo producción)
-origins = [
-    "http://localhost:3000",
-    "http://localhost:5173",
-    "http://localhost:8000",
-    "http://127.0.0.1:3000",
-    "http://127.0.0.1:5173",
-    "http://127.0.0.1:8000",
-    "https://*.onrender.com",
-    "https://*.vercel.app",
-]
-
-# Agregar orígenes de configuración
-if settings.BACKEND_CORS_ORIGINS:
-    origins.extend([str(origin) for origin in settings.BACKEND_CORS_ORIGINS])
-
-# Eliminar duplicados manteniendo orden
-origins = list(dict.fromkeys(origins))
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=origins,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-    expose_headers=["*"],
-    max_age=3600,
-)
-
-logger.info(f"✅ CORS configurado con {len(origins)} orígenes")
 
 # =====================================================
 # 🚀 OTROS MIDDLEWARES
@@ -273,6 +290,7 @@ async def root():
         "debug": settings.DEBUG,
         "status": "operational",
         "modulos_cargados": modulos_existentes,
+        "cors_origins": len(origins),
         "timestamp": datetime.utcnow().isoformat()
     }
 
@@ -362,7 +380,8 @@ async def system_info():
         "environment": settings.ENVIRONMENT,
         "debug": settings.DEBUG,
         "api_prefix": settings.API_V1_PREFIX,
-        "cors_origins": len(settings.BACKEND_CORS_ORIGINS),
+        "cors_origins_count": len(origins),
+        "cors_origins": origins,
         "modules": modulos_existentes,
         "database": {
             "host": settings.SUPABASE_DB_HOST,
@@ -457,6 +476,7 @@ async def startup_event():
     logger.info(f"🔧 Modo: {settings.ENVIRONMENT.upper()}")
     logger.info(f"📡 API Prefix: {settings.API_V1_PREFIX}")
     logger.info(f"📦 Módulos cargados: {len(modulos_existentes)}")
+    logger.info(f"🌐 CORS orígenes: {len(origins)}")
     logger.info("=" * 60)
     
     # Inicializar conexión a base de datos
