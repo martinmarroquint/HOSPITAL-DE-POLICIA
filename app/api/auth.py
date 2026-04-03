@@ -36,7 +36,7 @@ def obtener_datos_personal(db: Session, personal_id: UUID):
 
 
 # =====================================================
-# 🔓 LOGIN CON BYPASS TEMPORAL - PARA PODER ACCEDER AHORA
+# ✅ LOGIN CON VERIFICACIÓN NORMAL (SIN BYPASS)
 # =====================================================
 @router.post("/login", response_model=Token)
 async def login(
@@ -45,7 +45,7 @@ async def login(
 ) -> Any:
     """
     OAuth2 compatible token login
-    🔓 TEMPORAL: Acepta admin123 para jesus@administracion.com
+    Los roles se toman de la tabla PERSONAL, no de USUARIO
     """
     print(f"🔐 Intentando login para: {form_data.username}")
     
@@ -61,22 +61,18 @@ async def login(
         )
     
     print(f"✅ Usuario encontrado: {user.email}")
+    print(f"🔑 Hash en BD: {user.password_hash[:30]}..." if user.password_hash else "🔑 Hash es NULL")
     
-    # 🔓 BYPASS TEMPORAL: Aceptar admin123 para el usuario admin
-    # Esto es SOLO PARA PODER PROBAR EL SISTEMA
-    # DESPUÉS DE VERIFICAR QUE FUNCIONA, DEBES CORREGIR EL HASH EN LA BD
-    if user.email == "jesus@administracion.com" and form_data.password == "admin123":
-        print(f"🔓 BYPASS: Login exitoso para {user.email} con contraseña temporal")
-        # Continuar con el login normal
-    elif not verify_password(form_data.password, user.password_hash):
+    # ✅ VERIFICACIÓN NORMAL (SIN BYPASS)
+    if not verify_password(form_data.password, user.password_hash):
         print(f"❌ Contraseña incorrecta para: {user.email}")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Credenciales incorrectas",
             headers={"WWW-Authenticate": "Bearer"},
         )
-    else:
-        print(f"✅ Contraseña correcta para: {user.email}")
+    
+    print(f"✅ Contraseña correcta para: {user.email}")
     
     if not user.activo:
         raise HTTPException(
