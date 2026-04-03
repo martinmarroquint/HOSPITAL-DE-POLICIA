@@ -1,4 +1,4 @@
-# app/api/asistencia.py - VERSIÓN CORREGIDA CON HORARIOS ACTUALIZADOS
+# app/api/asistencia.py - VERSIÓN CORREGIDA (sin incidencias en creación)
 from fastapi import APIRouter, Depends, HTTPException, Query, BackgroundTasks, Body
 from fastapi.responses import Response, JSONResponse
 from sqlalchemy.orm import Session
@@ -44,7 +44,7 @@ def convertir_a_decimal(dt: datetime) -> float:
     return dt.hour + dt.minute / 60.0
 
 # =====================================================
-# FUNCIÓN AUXILIAR PARA CALCULAR INCIDENCIAS (CORREGIDA)
+# FUNCIÓN AUXILIAR PARA CALCULAR INCIDENCIAS
 # =====================================================
 
 def calcular_incidencias(tipo: str, hora_registro: datetime, turno_codigo: str, fecha: date):
@@ -52,7 +52,7 @@ def calcular_incidencias(tipo: str, hora_registro: datetime, turno_codigo: str, 
     Calcula tardanza (para ENTRADA) o salida temprana (para SALIDA)
     Retorna dict con incidencias encontradas
     
-    HORARIOS CORRECTOS según constantes.js:
+    HORARIOS:
     - MAN: 07:30 - 13:30 (7.5 - 13.5)
     - TAR: 13:30 - 19:30 (13.5 - 19.5)
     - 12M: 07:30 - 19:30 (7.5 - 19.5)
@@ -62,7 +62,6 @@ def calcular_incidencias(tipo: str, hora_registro: datetime, turno_codigo: str, 
     """
     incidencias = {}
     
-    # ✅ HORARIOS CORREGIDOS según constantes.js
     horarios_turno = {
         "MAN": {"entrada": 7.5, "salida": 13.5, "tolerancia": 15},
         "TAR": {"entrada": 13.5, "salida": 19.5, "tolerancia": 15},
@@ -77,12 +76,10 @@ def calcular_incidencias(tipo: str, hora_registro: datetime, turno_codigo: str, 
     
     horario = horarios_turno.get(turno_codigo, {"entrada": None, "salida": None, "tolerancia": 15})
     
-    # Convertir hora de registro a decimal (ej: 07:30 → 7.5)
     hora_decimal = convertir_a_decimal(hora_registro)
     
     if tipo == "ENTRADA" and horario["entrada"] is not None:
         hora_esperada = horario["entrada"]
-        
         diferencia_minutos = int((hora_decimal - hora_esperada) * 60)
         
         if diferencia_minutos > horario["tolerancia"]:
@@ -109,9 +106,7 @@ def calcular_incidencias(tipo: str, hora_registro: datetime, turno_codigo: str, 
     elif tipo == "SALIDA" and horario["salida"] is not None:
         hora_esperada = horario["salida"]
         
-        # Manejo especial para turno nocturno (12N)
         if turno_codigo == "12N" and hora_esperada < 12:
-            # La salida es al día siguiente
             minutos_esperados = (24 + hora_esperada) * 60
             hora_decimal_ajustada = hora_decimal if hora_decimal >= 12 else hora_decimal + 24
             minutos_reales = hora_decimal_ajustada * 60
@@ -265,6 +260,7 @@ async def registros_hoy(
                 "timestamp": r.timestamp.isoformat(),
                 "tipo": r.tipo,
                 "tipo_registro": r.tipo_registro,
+                "turno_codigo": r.turno_codigo,
                 "controlador": controlador_nombre
             })
         
@@ -398,7 +394,7 @@ async def get_personal_activo(
 
 
 # =====================================================
-# ENDPOINT QR DE ASISTENCIA (CORREGIDO)
+# ENDPOINT QR DE ASISTENCIA (CORREGIDO - SIN incidencias en BD)
 # =====================================================
 
 @router.post("/qr-validar")
@@ -455,18 +451,22 @@ async def validar_qr_asistencia(
                 detail=f"Debe registrar {tipo_permitido} primero"
             )
         
-        # Calcular incidencias con hora local de Perú
+        # Calcular incidencias solo para mensaje (NO se guardan en BD)
         incidencias = calcular_incidencias(tipo, ahora_peru, planificacion.turno_codigo, hoy)
         
+        # Crear asistencia SIN el campo incidencias
         asistencia = Asistencia(
             personal_id=empleado_id,
             timestamp=ahora_peru,
             tipo=tipo,
             tipo_registro="QR",
             turno_codigo=planificacion.turno_codigo,
-            incidencias=incidencias if incidencias else None,
             created_by=current_user.id
         )
+        
+        # Si tu modelo tiene un campo JSON para metadata, puedes guardar incidencias ahí
+        # if hasattr(asistencia, 'metadata'):
+        #     asistencia.metadata = {"incidencias": incidencias}
         
         db.add(asistencia)
         db.commit()
@@ -499,7 +499,7 @@ async def validar_qr_asistencia(
 
 
 # =====================================================
-# ENDPOINT DIRECTO PARA PRUEBAS (CORREGIDO)
+# ENDPOINT DIRECTO PARA PRUEBAS (CORREGIDO - SIN incidencias en BD)
 # =====================================================
 
 @router.post("/registro-directo")
@@ -540,17 +540,23 @@ async def registro_directo(
             raise HTTPException(status_code=400, detail="Debe registrar ENTRADA primero")
         
         ahora_peru = get_peru_time()
+        
+        # Calcular incidencias solo para mensaje (NO se guardan en BD)
         incidencias = calcular_incidencias(tipo, ahora_peru, planificacion.turno_codigo, hoy)
         
+        # Crear asistencia SIN el campo incidencias
         asistencia = Asistencia(
             personal_id=personal_id,
             timestamp=ahora_peru,
             tipo=tipo,
             tipo_registro="MANUAL",
             turno_codigo=planificacion.turno_codigo,
-            incidencias=incidencias if incidencias else None,
             created_by=current_user.id
         )
+        
+        # Si tu modelo tiene un campo JSON para metadata, puedes guardar incidencias ahí
+        # if hasattr(asistencia, 'metadata'):
+        #     asistencia.metadata = {"incidencias": incidencias}
         
         db.add(asistencia)
         db.commit()
@@ -575,7 +581,7 @@ async def registro_directo(
 
 
 # =====================================================
-# ENDPOINT PARA REGISTRO MANUAL DE ASISTENCIA (CORREGIDO)
+# ENDPOINT PARA REGISTRO MANUAL DE ASISTENCIA (CORREGIDO - SIN incidencias en BD)
 # =====================================================
 
 @router.post("/registro-manual")
@@ -616,17 +622,22 @@ async def registro_manual(
                 detail=f"SIN_TURNO - No tiene turno asignado para {fecha_registro_date}"
             )
         
+        # Calcular incidencias solo para mensaje (NO se guardan en BD)
         incidencias = calcular_incidencias(tipo, timestamp, planificacion.turno_codigo, fecha_registro_date)
         
+        # Crear asistencia SIN el campo incidencias
         asistencia = Asistencia(
             personal_id=personal_id,
             timestamp=timestamp,
             tipo=tipo,
             tipo_registro="MANUAL",
             turno_codigo=planificacion.turno_codigo,
-            incidencias=incidencias if incidencias else None,
             created_by=current_user.id
         )
+        
+        # Si tu modelo tiene un campo JSON para metadata, puedes guardar incidencias ahí
+        # if hasattr(asistencia, 'metadata'):
+        #     asistencia.metadata = {"incidencias": incidencias}
         
         if hasattr(asistencia, 'justificacion') and justificacion:
             asistencia.justificacion = justificacion
@@ -694,8 +705,7 @@ async def get_asistencia_personal(
                 "hora": r.timestamp.time().isoformat(),
                 "tipo": r.tipo,
                 "tipo_registro": r.tipo_registro,
-                "turno": r.turno_codigo,
-                "incidencias": r.incidencias
+                "turno": r.turno_codigo
             })
         
         return {
@@ -747,11 +757,7 @@ async def reporte_asistencia(
                 estadisticas_por_dia[fecha_str] = {
                     "entradas": 0,
                     "salidas": 0,
-                    "total": 0,
-                    "incidencias": {
-                        "tardanzas": 0,
-                        "salidas_tempranas": 0
-                    }
+                    "total": 0
                 }
             
             if registro.tipo == "ENTRADA":
@@ -760,12 +766,6 @@ async def reporte_asistencia(
                 estadisticas_por_dia[fecha_str]["salidas"] += 1
             
             estadisticas_por_dia[fecha_str]["total"] += 1
-            
-            if registro.incidencias:
-                if "tardanza" in registro.incidencias:
-                    estadisticas_por_dia[fecha_str]["incidencias"]["tardanzas"] += 1
-                if "salida_temprana" in registro.incidencias:
-                    estadisticas_por_dia[fecha_str]["incidencias"]["salidas_tempranas"] += 1
         
         return {
             "periodo": {
