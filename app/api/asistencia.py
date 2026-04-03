@@ -1,8 +1,8 @@
-# app/api/asistencia.py - VERSIÓN CORREGIDA (sin incidencias en creación)
+# app/api/asistencia.py - VERSIÓN ACTUALIZADA CON SOPORTE QR V2
 from fastapi import APIRouter, Depends, HTTPException, Query, BackgroundTasks, Body
 from fastapi.responses import Response, JSONResponse
 from sqlalchemy.orm import Session
-from sqlalchemy import text
+from sqlalchemy import text, cast, String
 from typing import List, Optional
 from datetime import datetime, date, timedelta, timezone as tz
 from uuid import UUID
@@ -42,6 +42,10 @@ def get_peru_time() -> datetime:
 def convertir_a_decimal(dt: datetime) -> float:
     """Convierte un datetime a horas decimales (ej: 07:30 → 7.5)"""
     return dt.hour + dt.minute / 60.0
+
+def generar_id_corto(uuid_str: str, longitud: int = 8) -> str:
+    """Genera un ID corto a partir de un UUID (últimos N caracteres)"""
+    return uuid_str.replace('-', '')[-longitud:]
 
 # =====================================================
 # FUNCIÓN AUXILIAR PARA CALCULAR INCIDENCIAS
@@ -394,7 +398,51 @@ async def get_personal_activo(
 
 
 # =====================================================
-# ENDPOINT QR DE ASISTENCIA (CORREGIDO - SIN incidencias en BD)
+# FUNCIÓN AUXILIAR PARA EXTRAER EMPLEADO_ID (SOPORTA V1 Y V2)
+# =====================================================
+
+def extraer_empleado_id_qr(payload: dict, db: Session) -> Optional[str]:
+    """
+    Extrae el empleado_id soportando formato antiguo y nuevo
+    Retorna el UUID completo del empleado
+    """
+    # Formato antiguo (v1)
+    if "empleado_id" in payload:
+        return payload["empleado_id"]
+    
+    if "personal_id" in payload:
+        return payload["personal_id"]
+    
+    # Formato nuevo (v2) - {i, n, d, t, v}
+    if "i" in payload:
+        id_corto = payload["i"]
+        logger.info(f"🔍 Buscando empleado por ID corto: {id_corto}")
+        
+        # Buscar empleado cuyo ID termine con el ID corto
+        empleado = db.query(Personal).filter(
+            cast(Personal.id, String).endswith(id_corto)
+        ).first()
+        
+        if empleado:
+            logger.info(f"✅ Empleado encontrado por ID corto: {empleado.nombre}")
+            return str(empleado.id)
+        
+        # Si no se encuentra, intentar por nombre
+        nombre_corto = payload.get("n", "")
+        if nombre_corto:
+            logger.info(f"🔍 Buscando empleado por nombre: {nombre_corto}")
+            empleado = db.query(Personal).filter(
+                Personal.nombre.ilike(f"%{nombre_corto}%")
+            ).first()
+            if empleado:
+                logger.info(f"✅ Empleado encontrado por nombre: {empleado.nombre}")
+                return str(empleado.id)
+    
+    return None
+
+
+# =====================================================
+# ENDPOINT QR DE ASISTENCIA (ACTUALIZADO - SOPORTA V1 Y V2)
 # =====================================================
 
 @router.post("/qr-validar")
@@ -404,37 +452,132 @@ async def validar_qr_asistencia(
     db: Session = Depends(get_db),
     current_user: Usuario = Depends(require_roles(["admin", "oficial_permanencia", "control_qr"]))
 ):
-    """Valida QR de asistencia generado por /qr/generar"""
+    """
+    Valida QR de asistencia - SOPORTA FORMATO V1 (legacy) Y V2 (optimizado)
+    
+    Formato V1: { empleado_id, expira_en, qr_id, ... }
+    Formato V2: { i, n, d, t, v }
+    """
     try:
         decoded_str = base64.b64decode(qr_data).decode('utf-8')
-        data = json.loads(decoded_str)
+        payload = json.loads(decoded_str)
         
-        empleado_id = data.get("empleado_id")
+        logger.info(f"📦 QR recibido para validación: {payload}")
+        
+        # =====================================================
+        # DETECTAR VERSIÓN DEL FORMATO
+        # =====================================================
+        version = payload.get("v", "1")
+        logger.info(f"📌 Versión QR detectada: {version}")
+        
+        # =====================================================
+        # EXTRAER EMPLEADO_ID (soporta ambos formatos)
+        # =====================================================
+        empleado_id = extraer_empleado_id_qr(payload, db)
+        
         if not empleado_id:
-            raise HTTPException(status_code=400, detail="QR no contiene empleado_id")
+            logger.warning("❌ No se pudo extraer empleado_id del QR")
+            raise HTTPException(
+                status_code=400, 
+                detail="QR_INVALIDO - No se pudo identificar al empleado"
+            )
         
-        expira_en = datetime.fromisoformat(data.get("expira_en"))
+        logger.info(f"✅ Empleado ID extraído: {empleado_id}")
+        
+        # =====================================================
+        # BUSCAR QR EN BASE DE DATOS (si existe)
+        # =====================================================
+        qr_registro = None
+        qr_id = None
+        expira_en = None
+        
+        # Para formato v1, buscar por qr_id
+        if version == "1" and "qr_id" in payload:
+            qr_id = payload["qr_id"]
+            qr_registro = db.query(QRRegistro).filter(
+                QRRegistro.qr_id == qr_id
+            ).first()
+            if qr_registro:
+                expira_en = qr_registro.expira_en
+        
+        # Para formato v2, buscar por empleado_id y estado activo
+        elif version == "2":
+            ahora_peru = get_peru_time()
+            qr_registro = db.query(QRRegistro).filter(
+                QRRegistro.empleado_id == empleado_id,
+                QRRegistro.expira_en > ahora_peru,
+                QRRegistro.usado == False,
+                QRRegistro.tipo == "asistencia"
+            ).order_by(QRRegistro.generado_en.desc()).first()
+            
+            if qr_registro:
+                qr_id = qr_registro.qr_id
+                expira_en = qr_registro.expira_en
+                logger.info(f"✅ QR encontrado en BD: {qr_id}")
+        
+        # =====================================================
+        # VERIFICAR EXPIRACIÓN
+        # =====================================================
         ahora_peru = get_peru_time()
         
-        if expira_en.tzinfo is None:
-            expira_en = PERU_TZ.localize(expira_en)
+        if expira_en:
+            if expira_en.tzinfo is None:
+                expira_en = PERU_TZ.localize(expira_en)
+            
+            if ahora_peru > expira_en:
+                logger.warning(f"❌ QR expirado - Expira: {expira_en}, Ahora: {ahora_peru}")
+                raise HTTPException(
+                    status_code=400, 
+                    detail="QR_EXPIRADO - El código QR ha expirado (máximo 10 segundos)"
+                )
         
-        if ahora_peru > expira_en:
-            raise HTTPException(status_code=400, detail="QR_EXPIRADO")
+        # =====================================================
+        # VERIFICAR SI YA FUE USADO
+        # =====================================================
+        if qr_registro and qr_registro.usado:
+            logger.warning(f"❌ QR ya usado: {qr_id}")
+            raise HTTPException(
+                status_code=400, 
+                detail="QR_YA_USADO - Este código QR ya fue utilizado"
+            )
         
+        # =====================================================
+        # VERIFICAR EMPLEADO
+        # =====================================================
         personal = db.query(Personal).filter(Personal.id == empleado_id).first()
         if not personal:
-            raise HTTPException(status_code=404, detail="Empleado no encontrado")
+            logger.warning(f"❌ Empleado no encontrado: {empleado_id}")
+            raise HTTPException(
+                status_code=404, 
+                detail="EMPLEADO_NO_ENCONTRADO - Personal no encontrado"
+            )
         
-        hoy = date.today()
+        if not personal.activo:
+            logger.warning(f"❌ Empleado inactivo: {personal.nombre}")
+            raise HTTPException(
+                status_code=400, 
+                detail="EMPLEADO_INACTIVO - El personal está inactivo"
+            )
+        
+        # =====================================================
+        # VERIFICAR TURNO DEL DÍA
+        # =====================================================
+        hoy = ahora_peru.date()
         planificacion = db.query(Planificacion).filter(
             Planificacion.personal_id == empleado_id,
             Planificacion.fecha == hoy
         ).first()
         
         if not planificacion:
-            raise HTTPException(status_code=400, detail="SIN_TURNO - No tiene turno asignado para hoy")
+            logger.warning(f"❌ Empleado sin turno: {personal.nombre} - {hoy}")
+            raise HTTPException(
+                status_code=400, 
+                detail="SIN_TURNO - No tiene turno asignado para hoy"
+            )
         
+        # =====================================================
+        # VERIFICAR ORDEN DE REGISTRO (ENTRADA -> SALIDA)
+        # =====================================================
         inicio_dia = datetime.combine(hoy, datetime.min.time())
         ultimo_registro = db.query(Asistencia).filter(
             Asistencia.personal_id == empleado_id,
@@ -446,15 +589,20 @@ async def validar_qr_asistencia(
             tipo_permitido = "SALIDA"
         
         if tipo != tipo_permitido:
+            logger.warning(f"❌ Orden incorrecto: se esperaba {tipo_permitido}, se recibió {tipo}")
             raise HTTPException(
                 status_code=400,
                 detail=f"Debe registrar {tipo_permitido} primero"
             )
         
-        # Calcular incidencias solo para mensaje (NO se guardan en BD)
+        # =====================================================
+        # CALCULAR INCIDENCIAS (solo para mensaje)
+        # =====================================================
         incidencias = calcular_incidencias(tipo, ahora_peru, planificacion.turno_codigo, hoy)
         
-        # Crear asistencia SIN el campo incidencias
+        # =====================================================
+        # CREAR REGISTRO DE ASISTENCIA
+        # =====================================================
         asistencia = Asistencia(
             personal_id=empleado_id,
             timestamp=ahora_peru,
@@ -464,42 +612,49 @@ async def validar_qr_asistencia(
             created_by=current_user.id
         )
         
-        # Si tu modelo tiene un campo JSON para metadata, puedes guardar incidencias ahí
-        # if hasattr(asistencia, 'metadata'):
-        #     asistencia.metadata = {"incidencias": incidencias}
-        
         db.add(asistencia)
         db.commit()
         db.refresh(asistencia)
         
-        qr_registro = db.query(QRRegistro).filter(
-            QRRegistro.qr_id == data.get("qr_id")
-        ).first()
+        # =====================================================
+        # MARCAR QR COMO USADO
+        # =====================================================
         if qr_registro:
             qr_registro.usado = True
             qr_registro.usado_en = ahora_peru
             qr_registro.usado_por = current_user.id
             db.commit()
+            logger.info(f"✅ QR marcado como usado: {qr_id}")
         
+        logger.info(f"✅ Asistencia registrada: {personal.nombre} - {tipo}")
+        
+        # =====================================================
+        # RESPUESTA
+        # =====================================================
         return {
             "valido": True,
             "empleado_id": str(empleado_id),
             "empleado_nombre": personal.nombre,
             "tipo": tipo,
             "timestamp": asistencia.timestamp.isoformat(),
+            "turno": planificacion.turno_codigo,
+            "formato": version,
             "incidencias": incidencias,
             "mensaje": generar_mensaje_incidencia(incidencias, tipo)
         }
         
     except HTTPException:
         raise
+    except json.JSONDecodeError as e:
+        logger.error(f"Error decodificando JSON del QR: {e}")
+        raise HTTPException(status_code=400, detail="QR_INVALIDO - Formato JSON inválido")
     except Exception as e:
         logger.error(f"Error en qr-validar: {str(e)}")
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=f"Error al validar QR: {str(e)}")
 
 
 # =====================================================
-# ENDPOINT DIRECTO PARA PRUEBAS (CORREGIDO - SIN incidencias en BD)
+# ENDPOINT DIRECTO PARA PRUEBAS (CORREGIDO)
 # =====================================================
 
 @router.post("/registro-directo")
@@ -541,10 +696,10 @@ async def registro_directo(
         
         ahora_peru = get_peru_time()
         
-        # Calcular incidencias solo para mensaje (NO se guardan en BD)
+        # Calcular incidencias solo para mensaje
         incidencias = calcular_incidencias(tipo, ahora_peru, planificacion.turno_codigo, hoy)
         
-        # Crear asistencia SIN el campo incidencias
+        # Crear asistencia
         asistencia = Asistencia(
             personal_id=personal_id,
             timestamp=ahora_peru,
@@ -553,10 +708,6 @@ async def registro_directo(
             turno_codigo=planificacion.turno_codigo,
             created_by=current_user.id
         )
-        
-        # Si tu modelo tiene un campo JSON para metadata, puedes guardar incidencias ahí
-        # if hasattr(asistencia, 'metadata'):
-        #     asistencia.metadata = {"incidencias": incidencias}
         
         db.add(asistencia)
         db.commit()
@@ -581,7 +732,7 @@ async def registro_directo(
 
 
 # =====================================================
-# ENDPOINT PARA REGISTRO MANUAL DE ASISTENCIA (CORREGIDO - SIN incidencias en BD)
+# ENDPOINT PARA REGISTRO MANUAL DE ASISTENCIA
 # =====================================================
 
 @router.post("/registro-manual")
@@ -622,10 +773,10 @@ async def registro_manual(
                 detail=f"SIN_TURNO - No tiene turno asignado para {fecha_registro_date}"
             )
         
-        # Calcular incidencias solo para mensaje (NO se guardan en BD)
+        # Calcular incidencias solo para mensaje
         incidencias = calcular_incidencias(tipo, timestamp, planificacion.turno_codigo, fecha_registro_date)
         
-        # Crear asistencia SIN el campo incidencias
+        # Crear asistencia
         asistencia = Asistencia(
             personal_id=personal_id,
             timestamp=timestamp,
@@ -634,10 +785,6 @@ async def registro_manual(
             turno_codigo=planificacion.turno_codigo,
             created_by=current_user.id
         )
-        
-        # Si tu modelo tiene un campo JSON para metadata, puedes guardar incidencias ahí
-        # if hasattr(asistencia, 'metadata'):
-        #     asistencia.metadata = {"incidencias": incidencias}
         
         if hasattr(asistencia, 'justificacion') and justificacion:
             asistencia.justificacion = justificacion
