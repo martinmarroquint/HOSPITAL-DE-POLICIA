@@ -33,7 +33,7 @@ logger = logging.getLogger(__name__)
 # =====================================================
 # 🟢 ROUTER CON PREFIX CORRECTO
 # =====================================================
-router = APIRouter(prefix="/qr", tags=["QR"])
+router = APIRouter(prefix="", tags=["QR"])
 
 # =====================================================
 # 🆕 MANEJADOR OPTIONS PARA CORS (preflight)
