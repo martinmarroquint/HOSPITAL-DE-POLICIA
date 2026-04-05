@@ -273,6 +273,87 @@ async def registros_hoy(
     except Exception as e:
         logger.error(f"Error en registros_hoy: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error al obtener registros: {str(e)}")
+    
+# =====================================================
+# ENDPOINT PARA REGISTROS POR RANGO DE FECHAS
+# =====================================================
+
+@router.get("/registros")
+async def get_registros_por_rango(
+    fecha_inicio: date = Query(...),
+    fecha_fin: date = Query(...),
+    db: Session = Depends(get_db),
+    current_user = Depends(require_roles(["admin", "oficial_permanencia", "jefe_area"]))
+):
+    """
+    Obtener registros de asistencia por rango de fechas
+    Este endpoint es utilizado por Reportes.jsx
+    """
+    try:
+        # Convertir fechas a datetime
+        inicio = datetime.combine(fecha_inicio, datetime.min.time())
+        fin = datetime.combine(fecha_fin, datetime.max.time())
+        
+        logger.info(f"📊 Consultando registros del {fecha_inicio} al {fecha_fin}")
+        
+        # Consultar registros en el rango
+        registros = db.query(Asistencia).filter(
+            Asistencia.timestamp >= inicio,
+            Asistencia.timestamp <= fin
+        ).order_by(Asistencia.timestamp.desc()).all()
+        
+        logger.info(f"✅ Encontrados {len(registros)} registros en el rango")
+        
+        # Obtener información de personal y controladores
+        resultado = []
+        personal_cache = {}
+        controlador_cache = {}
+        
+        for r in registros:
+            # Obtener personal (con caché)
+            if r.personal_id not in personal_cache:
+                personal = db.query(Personal).filter(Personal.id == r.personal_id).first()
+                personal_cache[r.personal_id] = personal
+            
+            personal = personal_cache[r.personal_id]
+            
+            # Obtener controlador (con caché)
+            controlador_nombre = "Sistema"
+            if r.created_by:
+                if r.created_by not in controlador_cache:
+                    controlador = db.query(Usuario).filter(Usuario.id == r.created_by).first()
+                    if controlador:
+                        if controlador.personal_id:
+                            controlador_personal = db.query(Personal).filter(
+                                Personal.id == controlador.personal_id
+                            ).first()
+                            controlador_nombre = controlador_personal.nombre if controlador_personal else controlador.email
+                        else:
+                            controlador_nombre = controlador.email
+                    controlador_cache[r.created_by] = controlador_nombre
+                else:
+                    controlador_nombre = controlador_cache[r.created_by]
+            
+            resultado.append({
+                "id": str(r.id),
+                "personal_id": str(r.personal_id),
+                "nombre": personal.nombre if personal else "Desconocido",
+                "grado": personal.grado if personal else "",
+                "cip": personal.cip if personal else "",
+                "dni": personal.dni if personal else "",
+                "area": personal.area if personal else "",
+                "timestamp": r.timestamp.isoformat(),
+                "tipo": r.tipo,
+                "tipo_registro": r.tipo_registro,
+                "turno_codigo": r.turno_codigo,
+                "controlador": controlador_nombre
+            })
+        
+        return resultado
+        
+    except Exception as e:
+        logger.error(f"Error en get_registros_por_rango: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error al obtener registros: {str(e)}")
 
 
 # =====================================================

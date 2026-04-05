@@ -36,7 +36,7 @@ def obtener_datos_personal(db: Session, personal_id: UUID):
 
 
 # =====================================================
-# ✅ LOGIN CON VERIFICACIÓN NORMAL (SIN BYPASS)
+# ✅ LOGIN CON VERIFICACIÓN NORMAL Y SINCRONIZACIÓN DE ROLES
 # =====================================================
 @router.post("/login", response_model=Token)
 async def login(
@@ -45,7 +45,7 @@ async def login(
 ) -> Any:
     """
     OAuth2 compatible token login
-    Los roles se toman de la tabla PERSONAL, no de USUARIO
+    Los roles se toman de la tabla PERSONAL y se sincronizan automáticamente
     """
     print(f"🔐 Intentando login para: {form_data.username}")
     
@@ -80,9 +80,18 @@ async def login(
             detail="Usuario inactivo"
         )
     
-    # ✅ OBTENER ROLES DE LA TABLA PERSONAL
+    # ✅ OBTENER ROLES DE LA TABLA PERSONAL (SIEMPRE)
     personal_data = obtener_datos_personal(db, user.personal_id)
     roles = personal_data["roles"] if personal_data else user.roles
+    
+    # ✅ SINCRONIZAR AUTOMÁTICAMENTE si hay diferencias
+    if personal_data and personal_data["roles"] != user.roles:
+        print(f"🔄 Sincronizando roles para {user.email}:")
+        print(f"   - Tabla usuarios (antes): {user.roles}")
+        print(f"   - Tabla personal: {personal_data['roles']}")
+        user.roles = personal_data["roles"]
+        db.commit()
+        print(f"   ✅ Roles actualizados a: {user.roles}")
     
     # Actualizar último acceso
     user.ultimo_acceso = datetime.utcnow()
@@ -95,7 +104,7 @@ async def login(
         expires_delta=access_token_expires
     )
     
-    print(f"🎉 Login exitoso para: {user.email}")
+    print(f"🎉 Login exitoso para: {user.email} con roles: {roles}")
     
     return {
         "access_token": access_token,
@@ -541,4 +550,33 @@ async def obtener_usuario_por_personal(
         "dni": personal_data["dni"] if personal_data else None,
         "cip": personal_data["cip"] if personal_data else None,
         "areas_que_jefatura": personal_data["areas_que_jefatura"] if personal_data else []
+    }
+
+
+# =====================================================
+# 🆕 ENDPOINT DE DIAGNÓSTICO PARA VERIFICAR ROLES
+# =====================================================
+@router.get("/debug/my-roles")
+async def debug_my_roles(
+    current_user: Usuario = Depends(get_current_active_user),
+    db: Session = Depends(get_db)
+):
+    """DEBUG: Muestra los roles actuales del usuario desde ambas tablas"""
+    # Obtener roles desde Usuario
+    user_roles = current_user.roles
+    
+    # Obtener roles desde Personal
+    personal_roles = []
+    if current_user.personal_id:
+        personal = db.query(Personal).filter(Personal.id == current_user.personal_id).first()
+        if personal:
+            personal_roles = personal.roles or []
+    
+    return {
+        "email": current_user.email,
+        "personal_id": str(current_user.personal_id) if current_user.personal_id else None,
+        "roles_from_usuario_table": user_roles,
+        "roles_from_personal_table": personal_roles,
+        "are_synced": user_roles == personal_roles,
+        "has_admin_role": "admin" in [r.lower() for r in user_roles] or "admin" in [r.lower() for r in personal_roles]
     }
