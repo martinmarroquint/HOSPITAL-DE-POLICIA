@@ -1,10 +1,9 @@
 # D:\Por si fallamos en la actualizacion\back\app\api\solicitudes_cambio.py
-# VERSIÓN COMPLETA CORREGIDA - CON SOPORTE PARA VACACIONES Y TIMEDELTA
-# CORREGIDO: Intercambio ahora usa los campos correctos (turno_solicitante_recibe, turno_colega_recibe)
+# VERSIÓN COMPLETA CORREGIDA - CON SOPORTE PARA VACACIONES, TIMEDELTA E HISTORIAL
 
 from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File, Form
 from sqlalchemy.orm import Session, joinedload
-from sqlalchemy import or_, and_
+from sqlalchemy import or_, and_, desc
 from typing import List, Optional
 from datetime import datetime, date, timedelta
 from uuid import UUID
@@ -190,7 +189,7 @@ def formatear_solicitud(s):
     }
 
 # =====================================================
-# ENDPOINTS
+# ENDPOINTS EXISTENTES
 # =====================================================
 
 @router.get("/personal/{personal_id}", response_model=List[SolicitudCambioResponse])
@@ -335,6 +334,28 @@ async def listar_pendientes(
     except Exception as e:
         logger.error(f"Error en listar_pendientes: {e}")
         raise HTTPException(status_code=500, detail=f"Error al cargar solicitudes pendientes: {str(e)}")
+
+
+@router.get("/todas")
+async def listar_todas_solicitudes(
+    db: Session = Depends(get_db),
+    current_user = Depends(require_roles(["admin", "jefe_area", "jefe_direccion"]))
+):
+    """
+    Lista TODAS las solicitudes (pendientes, aprobadas, rechazadas)
+    Solo para administradores y jefes
+    """
+    try:
+        solicitudes = db.query(SolicitudCambio).options(
+            joinedload(SolicitudCambio.empleado_rel),
+            joinedload(SolicitudCambio.empleado2_rel)
+        ).order_by(SolicitudCambio.created_at.desc()).all()
+        
+        return [formatear_solicitud(s) for s in solicitudes]
+        
+    except Exception as e:
+        logger.error(f"Error en listar_todas_solicitudes: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get("/{id}")
@@ -864,7 +885,181 @@ async def rechazar_solicitud(
 
 
 # =====================================================
-# ENDPOINTS PARA PLANIFICACIÓN MENSUAL (sin cambios)
+# 🆕 ENDPOINT DE HISTORIAL DE SOLICITUDES (APROBADAS/RECHAZADAS)
+# =====================================================
+@router.get("/historial")
+async def obtener_historial_solicitudes(
+    tipo: Optional[str] = Query(None, description="Filtrar por tipo: propio, intercambio, vacaciones"),
+    estado: Optional[str] = Query(None, description="Filtrar por estado: aprobada, rechazada"),
+    mes: Optional[str] = Query(None, description="Filtrar por mes (YYYY-MM)"),
+    busqueda: Optional[str] = Query(None, description="Búsqueda por nombre o área"),
+    limit: int = Query(100, ge=1, le=500, description="Límite de registros"),
+    offset: int = Query(0, ge=0, description="Número de registros a saltar"),
+    db: Session = Depends(get_db),
+    current_user = Depends(require_roles(["admin", "jefe_area", "jefe_direccion", "usuario"]))
+):
+    """
+    Obtiene el historial de solicitudes aprobadas y rechazadas
+    """
+    try:
+        # Base: solicitudes aprobadas o rechazadas
+        query = db.query(SolicitudCambio).filter(
+            SolicitudCambio.estado.in_(["aprobada", "rechazada"])
+        )
+        
+        # Filtrar por tipo
+        if tipo and tipo != "todos":
+            query = query.filter(SolicitudCambio.tipo == tipo)
+        
+        # Filtrar por estado
+        if estado and estado != "todas":
+            query = query.filter(SolicitudCambio.estado == estado)
+        
+        # Filtrar por mes
+        if mes and mes != "todos":
+            try:
+                anio, mes_num = map(int, mes.split('-'))
+                fecha_inicio = date(anio, mes_num, 1)
+                if mes_num == 12:
+                    fecha_fin = date(anio + 1, 1, 1)
+                else:
+                    fecha_fin = date(anio, mes_num + 1, 1)
+                query = query.filter(SolicitudCambio.created_at >= fecha_inicio)
+                query = query.filter(SolicitudCambio.created_at < fecha_fin)
+            except:
+                pass
+        
+        # Unir con Personal para búsqueda
+        if busqueda:
+            busqueda_lower = busqueda.lower()
+            query = query.join(
+                Personal, Personal.id == SolicitudCambio.empleado_id
+            ).filter(
+                or_(
+                    Personal.nombre.ilike(f"%{busqueda}%"),
+                    Personal.area.ilike(f"%{busqueda}%")
+                )
+            )
+        else:
+            query = query.options(
+                joinedload(SolicitudCambio.empleado_rel),
+                joinedload(SolicitudCambio.empleado2_rel)
+            )
+        
+        # Contar total antes de paginar
+        total = query.count()
+        
+        # Ordenar y paginar
+        solicitudes = query.order_by(
+            desc(SolicitudCambio.fecha_revision),
+            desc(SolicitudCambio.created_at)
+        ).offset(offset).limit(limit).all()
+        
+        result = []
+        for s in solicitudes:
+            solicitud_dict = formatear_solicitud(s)
+            
+            # Agregar campos específicos para historial
+            solicitud_dict["fecha_resolucion"] = s.fecha_revision.isoformat() if s.fecha_revision else s.updated_at.isoformat() if hasattr(s, 'updated_at') and s.updated_at else None
+            solicitud_dict["resuelto_por"] = None
+            solicitud_dict["motivo_rechazo"] = s.comentario_revision if s.estado == "rechazada" else None
+            solicitud_dict["tiempo_resolucion"] = None
+            
+            # Calcular tiempo de resolución si tenemos fechas
+            if s.fecha_revision and s.created_at:
+                tiempo = (s.fecha_revision - s.created_at).total_seconds() / 3600
+                solicitud_dict["tiempo_resolucion"] = round(tiempo, 1)
+            
+            # Obtener nombre del resolutor
+            if s.revisado_por:
+                resolutor = db.query(Usuario).filter(Usuario.id == s.revisado_por).first()
+                if resolutor:
+                    personal_resolutor = db.query(Personal).filter(Personal.id == resolutor.personal_id).first()
+                    solicitud_dict["resuelto_por"] = personal_resolutor.nombre if personal_resolutor else resolutor.email
+            
+            result.append(solicitud_dict)
+        
+        return {
+            "total": total,
+            "limit": limit,
+            "offset": offset,
+            "data": result
+        }
+        
+    except Exception as e:
+        logger.error(f"Error en obtener_historial_solicitudes: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# =====================================================
+# 🆕 ENDPOINT DE ESTADÍSTICAS DEL HISTORIAL
+# =====================================================
+@router.get("/estadisticas/historial")
+async def obtener_estadisticas_historial(
+    db: Session = Depends(get_db),
+    current_user = Depends(require_roles(["admin", "jefe_area", "jefe_direccion"]))
+):
+    """
+    Obtiene estadísticas del historial de solicitudes
+    """
+    try:
+        solicitudes = db.query(SolicitudCambio).filter(
+            SolicitudCambio.estado.in_(["aprobada", "rechazada"])
+        ).all()
+        
+        total = len(solicitudes)
+        aprobadas = len([s for s in solicitudes if s.estado == "aprobada"])
+        rechazadas = len([s for s in solicitudes if s.estado == "rechazada"])
+        tasa_aprobacion = round((aprobadas / total) * 100, 1) if total > 0 else 0
+        
+        # Por tipo
+        por_tipo = {}
+        tipos = ["propio", "intercambio", "vacaciones", "permiso"]
+        for t in tipos:
+            count = len([s for s in solicitudes if s.tipo == t])
+            por_tipo[t] = count
+        
+        # Por mes (últimos 6 meses)
+        por_mes = []
+        from datetime import timedelta
+        hoy = date.today()
+        
+        for i in range(6):
+            fecha = hoy.replace(day=1) - timedelta(days=30 * i)
+            mes_key = f"{fecha.year}-{fecha.month}"
+            mes_label = fecha.strftime("%B %Y")
+            
+            mes_solicitudes = [
+                s for s in solicitudes 
+                if s.created_at and 
+                s.created_at.year == fecha.year and 
+                s.created_at.month == fecha.month
+            ]
+            
+            por_mes.append({
+                "mes": mes_key,
+                "label": mes_label,
+                "total": len(mes_solicitudes),
+                "aprobadas": len([s for s in mes_solicitudes if s.estado == "aprobada"]),
+                "rechazadas": len([s for s in mes_solicitudes if s.estado == "rechazada"])
+            })
+        
+        return {
+            "total": total,
+            "aprobadas": aprobadas,
+            "rechazadas": rechazadas,
+            "tasa_aprobacion": tasa_aprobacion,
+            "por_tipo": por_tipo,
+            "por_mes": por_mes
+        }
+        
+    except Exception as e:
+        logger.error(f"Error en obtener_estadisticas_historial: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# =====================================================
+# ENDPOINTS PARA PLANIFICACIÓN MENSUAL
 # =====================================================
 
 @router.get("/planificaciones/pendientes")
