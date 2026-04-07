@@ -1,6 +1,7 @@
 # D:\Por si fallamos en la actualizacion\back\app\api\solicitudes_cambio.py
 # VERSIÓN COMPLETA CORREGIDA - CON SOPORTE PARA VACACIONES, TIMEDELTA E HISTORIAL
 # ✅ CORREGIDO: Endpoints específicos ANTES que rutas dinámicas /{id}
+# ✅ AGREGADO: Nuevo endpoint /mis-solicitudes que sigue el patrón correcto de CORS
 
 from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File, Form
 from sqlalchemy.orm import Session, joinedload
@@ -493,6 +494,59 @@ async def listar_planificaciones_pendientes(
         logger.error(f"Error en listar_planificaciones_pendientes: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+# =====================================================
+# ✅ NUEVO ENDPOINT PARA MIS SOLICITUDES (RECOMENDADO - SIGUE EL PATRÓN QUE FUNCIONA)
+# =====================================================
+
+@router.get("/mis-solicitudes")
+async def obtener_mis_solicitudes(
+    db: Session = Depends(get_db),
+    current_user = Depends(require_roles(["admin", "jefe_area", "usuario"]))
+):
+    """
+    Obtiene las solicitudes del usuario actual.
+    Este endpoint sigue el mismo patrón que /pendientes y /historial,
+    por lo que NO tendrá problemas de CORS.
+    Obtiene el personal_id automáticamente del token del usuario.
+    """
+    try:
+        personal_id = current_user.personal_id
+        
+        if not personal_id:
+            raise HTTPException(status_code=400, detail="Usuario no tiene personal_id asociado")
+        
+        logger.info(f"🔍 Obteniendo mis solicitudes para personal_id: {personal_id}")
+        
+        # Buscar solicitudes donde el usuario es empleado_id o empleado2_id
+        solicitudes = db.query(SolicitudCambio).filter(
+            or_(
+                SolicitudCambio.empleado_id == personal_id,
+                SolicitudCambio.empleado2_id == personal_id
+            )
+        ).options(
+            joinedload(SolicitudCambio.empleado_rel),
+            joinedload(SolicitudCambio.empleado2_rel)
+        ).order_by(SolicitudCambio.created_at.desc()).all()
+        
+        logger.info(f"📊 Encontradas {len(solicitudes)} solicitudes para el usuario")
+        
+        # Formatear respuesta usando la misma función que los demás endpoints
+        return [formatear_solicitud(s) for s in solicitudes]
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Error en obtener_mis_solicitudes: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Error interno: {str(e)}")
+
+# =====================================================
+# =====================================================
+# ✅ ENDPOINTS CON PARÁMETROS DINÁMICOS (AL FINAL)
+# =====================================================
+# =====================================================
+
 @router.get("/personal/{personal_id}", response_model=List[SolicitudCambioResponse])
 async def listar_por_personal(
     personal_id: UUID,
@@ -501,7 +555,10 @@ async def listar_por_personal(
 ):
     """
     Lista solicitudes de un personal específico
+    NOTA: Este endpoint puede tener problemas de CORS.
+    Se recomienda usar /mis-solicitudes para el usuario actual.
     """
+    # Verificar permisos
     if "usuario" in current_user.roles and "admin" not in current_user.roles:
         if str(current_user.personal_id) != str(personal_id):
             raise HTTPException(status_code=403, detail="No autorizado")
@@ -564,12 +621,6 @@ async def listar_por_personal(
     except Exception as e:
         logger.error(f"Error en listar_por_personal: {e}")
         raise HTTPException(status_code=500, detail=str(e))
-
-# =====================================================
-# =====================================================
-# ✅ ENDPOINTS CON PARÁMETROS DINÁMICOS (AL FINAL)
-# =====================================================
-# =====================================================
 
 @router.post("/planificacion/{solicitud_id}/aprobar")
 async def aprobar_planificacion_mensual(
