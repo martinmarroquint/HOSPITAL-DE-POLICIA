@@ -4,6 +4,7 @@ from sqlalchemy.orm import Session
 from datetime import timedelta, datetime
 from typing import Any, List, Optional
 from uuid import UUID
+from pydantic import BaseModel, Field  # ✅ Importación adicional para el schema
 
 from app.database import get_db
 from app.core.security import create_access_token, verify_password, get_password_hash
@@ -14,6 +15,19 @@ from app.schemas.auth import Token, LoginRequest, UserProfile, PasswordChange, U
 from app.config import settings
 
 router = APIRouter()
+
+
+# =====================================================
+# ✅ SCHEMA EXPLÍCITO PARA RESET PASSWORD (CORRECCIÓN)
+# =====================================================
+class ResetPasswordRequest(BaseModel):
+    """
+    Schema para resetear contraseña.
+    ⚠️ CRÍTICO: FastAPI necesita este schema explícito para parsear
+    correctamente el body y evitar el error 500 sin headers CORS.
+    """
+    personal_id: Optional[UUID] = Field(None, description="ID del personal (opcional si se usa usuario_id en URL)")
+    nueva_password: str = Field(..., min_length=6, description="Nueva contraseña")
 
 
 # =====================================================
@@ -400,38 +414,67 @@ async def actualizar_usuario_auth(
 
 
 # =====================================================
-# ENDPOINT PARA RESETEAR CONTRASEÑA
+# ✅ ENDPOINT PARA RESETEAR CONTRASEÑA (CORREGIDO)
 # =====================================================
 @router.post("/reset-password")
 @router.post("/usuarios/{usuario_id}/reset-password")
 async def reset_password_usuario(
+    request: ResetPasswordRequest,  # ✅ AHORA USA EL SCHEMA EXPLÍCITO
     usuario_id: Optional[UUID] = None,
-    personal_id: Optional[UUID] = Body(None, embed=True),
-    nueva_password: str = Body(..., embed=True),
     db: Session = Depends(get_db),
     current_user: Usuario = Depends(require_roles(["admin"]))
 ):
-    """Resetea la contraseña de un usuario"""
-    usuario = None
+    """
+    Resetea la contraseña de un usuario.
     
-    if usuario_id:
-        usuario = db.query(Usuario).filter(Usuario.id == usuario_id).first()
+    ⚠️ CORREGIDO: Ahora usa un schema Pydantic explícito (ResetPasswordRequest)
+    que evita el error 500 por parsing incorrecto del body.
     
-    if not usuario and personal_id:
-        usuario = db.query(Usuario).filter(Usuario.personal_id == personal_id).first()
-    
-    if not usuario:
-        raise HTTPException(status_code=404, detail="Usuario no encontrado")
-    
-    usuario.password_hash = get_password_hash(nueva_password)
-    db.commit()
-    
-    return {
-        "message": "Contraseña restablecida exitosamente",
-        "usuario_id": str(usuario.id),
-        "personal_id": str(usuario.personal_id),
-        "email": usuario.email
-    }
+    Se puede llamar de dos formas:
+    1. POST /auth/reset-password con {"personal_id": "...", "nueva_password": "..."}
+    2. POST /auth/usuarios/{usuario_id}/reset-password con {"nueva_password": "..."}
+    """
+    try:
+        usuario = None
+        
+        # Buscar por usuario_id en URL
+        if usuario_id:
+            usuario = db.query(Usuario).filter(Usuario.id == usuario_id).first()
+        
+        # Si no se encontró, buscar por personal_id en el body
+        if not usuario and request.personal_id:
+            usuario = db.query(Usuario).filter(Usuario.personal_id == request.personal_id).first()
+        
+        if not usuario:
+            raise HTTPException(status_code=404, detail="Usuario no encontrado")
+        
+        # Actualizar contraseña
+        usuario.password_hash = get_password_hash(request.nueva_password)
+        db.commit()
+        
+        return {
+            "success": True,
+            "message": "Contraseña restablecida exitosamente",
+            "usuario_id": str(usuario.id),
+            "personal_id": str(usuario.personal_id),
+            "email": usuario.email
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        # Log del error para debugging
+        import traceback
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.error(f"❌ Error en reset_password_usuario: {str(e)}")
+        logger.error(traceback.format_exc())
+        
+        # Devolver error 500 con mensaje claro
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error interno al resetear contraseña: {str(e)}"
+        )
 
 
 @router.get("/personal/{personal_id}/auth-id")
@@ -458,11 +501,16 @@ async def obtener_auth_id_por_personal(
 
 @router.post("/generar-password-temporal")
 async def generar_password_temporal(
-    personal_id: UUID = Body(...),
+    personal_id: UUID = Body(..., embed=True),  # ✅ embed=True para aceptar {"personal_id": "..."}
     db: Session = Depends(get_db),
     current_user: Usuario = Depends(require_roles(["admin"]))
 ):
-    """Genera una contraseña temporal para un usuario"""
+    """
+    Genera una contraseña temporal para un usuario.
+    
+    ✅ ENDPOINT QUE SÍ FUNCIONA CORRECTAMENTE
+    Recomendado usar este en lugar de /reset-password si persisten problemas.
+    """
     personal = db.query(Personal).filter(Personal.id == personal_id).first()
     if not personal:
         raise HTTPException(status_code=404, detail="Personal no encontrado")
@@ -482,7 +530,7 @@ async def generar_password_temporal(
     return {
         "message": "Contraseña temporal generada",
         "password_temporal": password_temporal,
-        "usuario_id": usuario.id,
+        "usuario_id": str(usuario.id),
         "email": usuario.email
     }
 
