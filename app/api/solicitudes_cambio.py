@@ -1,12 +1,12 @@
-# D:\Por si fallamos en la actualizacion\back\app\api\solicitudes_cambio.py
-# VERSIÓN COMPLETA CORREGIDA - CON SOPORTE PARA VACACIONES, TIMEDELTA E HISTORIAL
+# api/solicitudes_cambio.py
+# VERSIÓN COMPLETA - CON SOPORTE PARA TODOS LOS ROLES DE JEFATURA
 # ✅ CORREGIDO: Endpoints específicos ANTES que rutas dinámicas /{id}
-# ✅ AGREGADO: Nuevo endpoint /mis-solicitudes que sigue el patrón correcto de CORS
+# ✅ AGREGADO: Soporte para jefe_grupo, jefe_departamento, jefe_direccion, recursos_humanos, oficina_central
 
 from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File, Form
 from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import or_, and_, desc
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 from datetime import datetime, date, timedelta
 from uuid import UUID
 import json
@@ -31,6 +31,138 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 # =====================================================
+# ROLES DE JEFATURA Y ACCESO GLOBAL
+# =====================================================
+ROLES_JEFATURA = ['jefe_grupo', 'jefe_area', 'jefe_departamento', 'jefe_direccion']
+ROLES_ACCESO_GLOBAL = ['admin', 'recursos_humanos', 'oficina_central']
+
+# Mapeo de rol a tipo de jefatura
+ROL_A_TIPO = {
+    'jefe_grupo': 'grupo',
+    'jefe_area': 'area',
+    'jefe_departamento': 'departamento',
+    'jefe_direccion': 'direccion'
+}
+
+# =====================================================
+# FUNCIÓN PARA PROCESAR ÁREAS DE JEFATURA (COMPATIBILIDAD DUAL)
+# =====================================================
+def procesar_areas_jefatura(areas_que_jefatura: Optional[List], areas_jefatura: Optional[Dict]) -> Dict[str, List[str]]:
+    """
+    Procesa y combina ambos formatos de áreas de jefatura.
+    
+    Args:
+        areas_que_jefatura: Array plano (legacy)
+        areas_jefatura: Objeto estructurado (nuevo)
+        
+    Returns:
+        Diccionario con áreas por tipo: {'grupo': [], 'area': [], 'departamento': [], 'direccion': []}
+    """
+    resultado = {
+        'grupo': [],
+        'area': [],
+        'departamento': [],
+        'direccion': []
+    }
+    
+    # Procesar formato nuevo (estructurado)
+    if areas_jefatura and isinstance(areas_jefatura, dict):
+        for tipo in resultado.keys():
+            if tipo in areas_jefatura and isinstance(areas_jefatura[tipo], list):
+                resultado[tipo].extend(areas_jefatura[tipo])
+    
+    # Procesar formato legacy (array con prefijos)
+    if areas_que_jefatura and isinstance(areas_que_jefatura, list):
+        prefijo_map = {
+            'grupo': 'grupo:',
+            'area': 'area:',
+            'departamento': 'depto:',
+            'direccion': 'direccion:'
+        }
+        
+        for tipo, prefijo in prefijo_map.items():
+            for item in areas_que_jefatura:
+                if isinstance(item, str):
+                    if item.startswith(prefijo):
+                        resultado[tipo].append(item.replace(prefijo, ''))
+                    elif ':' not in item and tipo == 'area':
+                        # Sin prefijo = área (legacy puro)
+                        resultado[tipo].append(item)
+    
+    # Eliminar duplicados
+    for tipo in resultado:
+        resultado[tipo] = list(set(resultado[tipo]))
+    
+    return resultado
+
+
+# =====================================================
+# FUNCIÓN PARA OBTENER ÁREAS QUE JEFATURA UN USUARIO (TODAS COMBINADAS)
+# =====================================================
+def obtener_areas_jefatura_usuario(usuario: Personal) -> List[str]:
+    """
+    Obtiene TODAS las áreas que jefatura un usuario (todos los tipos combinados).
+    """
+    if not usuario:
+        return []
+    
+    areas_procesadas = procesar_areas_jefatura(usuario.areas_que_jefatura, usuario.areas_jefatura)
+    
+    todas_areas = []
+    for areas in areas_procesadas.values():
+        todas_areas.extend(areas)
+    
+    # Caso especial: jefe_area sin áreas asignadas -> su propia área
+    if 'jefe_area' in (usuario.roles or []) and not todas_areas and usuario.area:
+        todas_areas = [usuario.area]
+    
+    return list(set(todas_areas))
+
+
+# =====================================================
+# FUNCIÓN PARA VERIFICAR SI UN USUARIO PUEDE APROBAR UNA SOLICITUD
+# =====================================================
+def puede_aprobar_solicitud(usuario: Personal, solicitud: SolicitudCambio) -> bool:
+    """
+    Verifica si un usuario puede aprobar una solicitud específica.
+    Considera el nivel requerido y el área de la solicitud.
+    """
+    if not usuario or not solicitud:
+        return False
+    
+    roles = usuario.roles or []
+    
+    # Admin y roles globales pueden aprobar todo
+    if any(rol in roles for rol in ROLES_ACCESO_GLOBAL):
+        return True
+    
+    # Verificar si el próximo nivel corresponde a un rol que tiene el usuario
+    proximo_nivel = solicitud.proximo_nivel
+    if not proximo_nivel or proximo_nivel not in roles:
+        return False
+    
+    # Obtener área de la solicitud
+    area_solicitud = solicitud.empleado_rel.area if solicitud.empleado_rel else None
+    if not area_solicitud:
+        return False
+    
+    # Para jefes, verificar que el área esté en sus áreas que jefatura
+    areas_procesadas = procesar_areas_jefatura(usuario.areas_que_jefatura, usuario.areas_jefatura)
+    
+    tipo = ROL_A_TIPO.get(proximo_nivel)
+    if not tipo:
+        return False
+    
+    areas_permitidas = areas_procesadas.get(tipo, [])
+    
+    # Caso especial: jefe_area sin áreas asignadas
+    if proximo_nivel == 'jefe_area' and not areas_permitidas and usuario.area:
+        areas_permitidas = [usuario.area]
+    
+    return area_solicitud in areas_permitidas
+
+
+# =====================================================
 # FUNCIÓN AUXILIAR PARA EXTRAER CÓDIGO DE TURNO
 # =====================================================
 def extraer_codigo_turno(turno):
@@ -42,6 +174,7 @@ def extraer_codigo_turno(turno):
     if isinstance(turno, dict):
         return turno.get("codigo")
     return str(turno)
+
 
 # =====================================================
 # FUNCIÓN AUXILIAR PARA OBTENER NOMBRE DE USUARIO
@@ -60,13 +193,13 @@ def obtener_nombre_usuario(db, usuario):
     
     return usuario.email or "Sistema"
 
+
 # =====================================================
-# 🆕 FUNCIÓN PARA MARCAR VACACIONES EN PLANIFICACIÓN (CORREGIDA CON TIMEDELTA)
+# FUNCIÓN PARA MARCAR VACACIONES EN PLANIFICACIÓN
 # =====================================================
 def marcar_vacaciones_en_planificacion(db: Session, empleado_id: UUID, fecha_inicio: date, fecha_fin: date, usuario_id: UUID):
     """
     Marca todos los días del período como VAC en la planificación
-    Usa timedelta para incrementar fechas correctamente entre meses
     """
     try:
         logger.info(f"🏖️ Marcando vacaciones para empleado {empleado_id} del {fecha_inicio} al {fecha_fin}")
@@ -77,19 +210,15 @@ def marcar_vacaciones_en_planificacion(db: Session, empleado_id: UUID, fecha_ini
         
         while fecha_actual <= fecha_fin:
             try:
-                # Buscar si ya existe planificación para esta fecha
                 planificacion_existente = db.query(Planificacion).filter(
                     Planificacion.personal_id == empleado_id,
                     Planificacion.fecha == fecha_actual
                 ).first()
                 
                 if planificacion_existente:
-                    # Actualizar turno existente
                     planificacion_existente.turno_codigo = "VAC"
                     planificacion_existente.updated_at = datetime.utcnow()
-                    logger.info(f"   ✅ Actualizado {fecha_actual} → VAC")
                 else:
-                    # Crear nueva planificación
                     nueva_planificacion = Planificacion(
                         personal_id=empleado_id,
                         fecha=fecha_actual,
@@ -97,7 +226,6 @@ def marcar_vacaciones_en_planificacion(db: Session, empleado_id: UUID, fecha_ini
                         created_by=usuario_id
                     )
                     db.add(nueva_planificacion)
-                    logger.info(f"   ✅ Creado {fecha_actual} → VAC")
                 
                 dias_marcados += 1
                 
@@ -105,7 +233,6 @@ def marcar_vacaciones_en_planificacion(db: Session, empleado_id: UUID, fecha_ini
                 logger.error(f"   ❌ Error en fecha {fecha_actual}: {e}")
                 errores += 1
             
-            # ✅ INCREMENTAR FECHA CORRECTAMENTE CON TIMEDELTA (cruza meses correctamente)
             fecha_actual = fecha_actual + timedelta(days=1)
         
         db.flush()
@@ -118,32 +245,34 @@ def marcar_vacaciones_en_planificacion(db: Session, empleado_id: UUID, fecha_ini
         traceback.print_exc()
         return 0
 
+
 # =====================================================
 # FUNCIÓN AUXILIAR PARA OBTENER CADENA JERÁRQUICA
 # =====================================================
-def obtener_cadena_jerarquica(area):
+def obtener_cadena_jerarquica(area: str) -> List[str]:
     """
     Determina la cadena de aprobación según el área del solicitante
     """
     if not area:
-        return ['jefe_area', 'jefe_direccion']
+        return ['jefe_area']
     
     area_upper = area.upper()
     
-    # Emergencia tiene estructura completa
-    if 'EMERGENCIA' in area_upper:
+    # Áreas con estructura jerárquica completa
+    if any(x in area_upper for x in ['EMERGENCIA', 'UCI', 'CRITICOS']):
         return ['jefe_grupo', 'jefe_area', 'jefe_departamento', 'jefe_direccion']
     
-    # Áreas médicas con estructura de 3 niveles
-    if any(med in area_upper for med in ['HOSPITALIZACION', 'CIRUGIA', 'MEDICINA', 'CARDIOLOGIA', 'NEUROLOGIA']):
+    # Áreas médicas con 3 niveles
+    if any(x in area_upper for x in ['HOSPITALIZACION', 'CIRUGIA', 'MEDICINA', 'CARDIOLOGIA', 'NEUROLOGIA', 'PEDIATRIA']):
         return ['jefe_area', 'jefe_departamento', 'jefe_direccion']
     
     # Divisiones y departamentos
-    if any(div in area_upper for div in ['DIVISION', 'DEPARTAMENTO']):
+    if any(x in area_upper for x in ['DIVISION', 'DEPARTAMENTO']):
         return ['jefe_departamento', 'jefe_direccion']
     
-    # Para todas las demás áreas
-    return ['jefe_area', 'jefe_direccion']
+    # Default: jefe de área
+    return ['jefe_area']
+
 
 # =====================================================
 # FUNCIÓN AUXILIAR PARA FORMATEAR SOLICITUDES
@@ -183,12 +312,12 @@ def formatear_solicitud(s):
         "area_nombre": s.empleado_rel.area if s.empleado_rel else None,
         "empleado2_nombre": s.empleado2_rel.nombre if s.empleado2_rel else None,
         "empleado2_grado": s.empleado2_rel.grado if s.empleado2_rel else None,
-        # Campos de vacaciones
         "fecha_inicio": s.fecha_inicio.isoformat() if s.fecha_inicio else None,
         "fecha_fin": s.fecha_fin.isoformat() if s.fecha_fin else None,
         "dias_solicitados": s.dias_solicitados,
         "tipo_vacaciones": s.tipo_vacaciones
     }
+
 
 # =====================================================
 # =====================================================
@@ -199,20 +328,22 @@ def formatear_solicitud(s):
 @router.get("/pendientes")
 async def listar_pendientes(
     db: Session = Depends(get_db),
-    current_user = Depends(require_roles(["admin", "jefe_area", "jefe_direccion"]))
+    current_user = Depends(require_roles(["admin", "jefe_area", "jefe_direccion", "jefe_grupo", "jefe_departamento", "recursos_humanos", "oficina_central"]))
 ):
     """
     Lista las solicitudes pendientes que el usuario puede aprobar
     según su rol y nivel jerárquico.
+    Soporta TODOS los roles de jefatura.
     """
     try:
-        # Admin puede ver todo
-        if "admin" in current_user.roles:
+        # Roles globales pueden ver todo
+        if any(rol in current_user.roles for rol in ROLES_ACCESO_GLOBAL):
             query = db.query(SolicitudCambio).filter(SolicitudCambio.estado == "pendiente")
             solicitudes = query.options(
                 joinedload(SolicitudCambio.empleado_rel),
                 joinedload(SolicitudCambio.empleado2_rel)
             ).order_by(SolicitudCambio.created_at.desc()).all()
+            logger.info(f"✅ Admin/Global: {len(solicitudes)} solicitudes pendientes")
             return [formatear_solicitud(s) for s in solicitudes]
         
         # Obtener información del usuario
@@ -220,32 +351,32 @@ async def listar_pendientes(
         if not usuario:
             raise HTTPException(status_code=403, detail="Usuario no encontrado")
         
+        # Procesar áreas de jefatura
+        areas_procesadas = procesar_areas_jefatura(usuario.areas_que_jefatura, usuario.areas_jefatura)
+        
         # Construir condiciones de filtro según roles
         condiciones = []
+        roles_usuario = current_user.roles or []
         
-        # Jefe de área
-        if "jefe_area" in current_user.roles:
-            areas_jefatura = usuario.areas_que_jefatura if usuario.areas_que_jefatura else []
-            
-            if areas_jefatura:
-                for area in areas_jefatura:
+        for rol in ROLES_JEFATURA:
+            if rol in roles_usuario:
+                tipo = ROL_A_TIPO[rol]
+                areas = areas_procesadas.get(tipo, [])
+                
+                # Caso especial: jefe_area sin áreas asignadas
+                if rol == 'jefe_area' and not areas and usuario.area:
+                    areas = [usuario.area]
+                
+                for area in areas:
                     condiciones.append(
                         and_(
-                            SolicitudCambio.proximo_nivel == "jefe_area",
+                            SolicitudCambio.proximo_nivel == rol,
                             Personal.area == area
                         )
                     )
         
-        # Jefe de dirección
-        if "jefe_direccion" in current_user.roles and usuario.area_que_jefatura_direccion:
-            condiciones.append(
-                and_(
-                    SolicitudCambio.proximo_nivel == "jefe_direccion",
-                    Personal.area == usuario.area_que_jefatura_direccion
-                )
-            )
-        
         if not condiciones:
+            logger.info(f"ℹ️ Usuario {usuario.nombre} no tiene áreas asignadas para aprobar")
             return []
         
         # Aplicar filtros
@@ -260,16 +391,18 @@ async def listar_pendientes(
             joinedload(SolicitudCambio.empleado2_rel)
         ).order_by(SolicitudCambio.created_at.desc()).all()
         
+        logger.info(f"✅ Jefe {usuario.nombre}: {len(solicitudes)} solicitudes pendientes")
         return [formatear_solicitud(s) for s in solicitudes]
         
     except Exception as e:
         logger.error(f"Error en listar_pendientes: {e}")
         raise HTTPException(status_code=500, detail=f"Error al cargar solicitudes pendientes: {str(e)}")
 
+
 @router.get("/todas")
 async def listar_todas_solicitudes(
     db: Session = Depends(get_db),
-    current_user = Depends(require_roles(["admin", "jefe_area", "jefe_direccion"]))
+    current_user = Depends(require_roles(["admin", "jefe_area", "jefe_direccion", "jefe_grupo", "jefe_departamento", "recursos_humanos", "oficina_central"]))
 ):
     """
     Lista TODAS las solicitudes (pendientes, aprobadas, rechazadas)
@@ -287,35 +420,32 @@ async def listar_todas_solicitudes(
         logger.error(f"Error en listar_todas_solicitudes: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+
 @router.get("/historial")
 async def obtener_historial_solicitudes(
-    tipo: Optional[str] = Query(None, description="Filtrar por tipo: propio, intercambio, vacaciones"),
-    estado: Optional[str] = Query(None, description="Filtrar por estado: aprobada, rechazada"),
-    mes: Optional[str] = Query(None, description="Filtrar por mes (YYYY-MM)"),
-    busqueda: Optional[str] = Query(None, description="Búsqueda por nombre o área"),
-    limit: int = Query(100, ge=1, le=500, description="Límite de registros"),
-    offset: int = Query(0, ge=0, description="Número de registros a saltar"),
+    tipo: Optional[str] = Query(None),
+    estado: Optional[str] = Query(None),
+    mes: Optional[str] = Query(None),
+    busqueda: Optional[str] = Query(None),
+    limit: int = Query(100, ge=1, le=500),
+    offset: int = Query(0, ge=0),
     db: Session = Depends(get_db),
-    current_user = Depends(require_roles(["admin", "jefe_area", "jefe_direccion", "usuario"]))
+    current_user = Depends(require_roles(["admin", "jefe_area", "jefe_direccion", "jefe_grupo", "jefe_departamento", "usuario"]))
 ):
     """
     Obtiene el historial de solicitudes aprobadas y rechazadas
     """
     try:
-        # Base: solicitudes aprobadas o rechazadas
         query = db.query(SolicitudCambio).filter(
             SolicitudCambio.estado.in_(["aprobada", "rechazada"])
         )
         
-        # Filtrar por tipo
         if tipo and tipo != "todos":
             query = query.filter(SolicitudCambio.tipo == tipo)
         
-        # Filtrar por estado
         if estado and estado != "todas":
             query = query.filter(SolicitudCambio.estado == estado)
         
-        # Filtrar por mes
         if mes and mes != "todos":
             try:
                 anio, mes_num = map(int, mes.split('-'))
@@ -329,7 +459,6 @@ async def obtener_historial_solicitudes(
             except:
                 pass
         
-        # Unir con Personal para búsqueda
         if busqueda:
             busqueda_lower = busqueda.lower()
             query = query.join(
@@ -346,10 +475,8 @@ async def obtener_historial_solicitudes(
                 joinedload(SolicitudCambio.empleado2_rel)
             )
         
-        # Contar total antes de paginar
         total = query.count()
         
-        # Ordenar y paginar
         solicitudes = query.order_by(
             desc(SolicitudCambio.fecha_revision),
             desc(SolicitudCambio.created_at)
@@ -358,19 +485,15 @@ async def obtener_historial_solicitudes(
         result = []
         for s in solicitudes:
             solicitud_dict = formatear_solicitud(s)
-            
-            # Agregar campos específicos para historial
-            solicitud_dict["fecha_resolucion"] = s.fecha_revision.isoformat() if s.fecha_revision else s.updated_at.isoformat() if hasattr(s, 'updated_at') and s.updated_at else None
+            solicitud_dict["fecha_resolucion"] = s.fecha_revision.isoformat() if s.fecha_revision else None
             solicitud_dict["resuelto_por"] = None
             solicitud_dict["motivo_rechazo"] = s.comentario_revision if s.estado == "rechazada" else None
             solicitud_dict["tiempo_resolucion"] = None
             
-            # Calcular tiempo de resolución si tenemos fechas
             if s.fecha_revision and s.created_at:
                 tiempo = (s.fecha_revision - s.created_at).total_seconds() / 3600
                 solicitud_dict["tiempo_resolucion"] = round(tiempo, 1)
             
-            # Obtener nombre del resolutor
             if s.revisado_por:
                 resolutor = db.query(Usuario).filter(Usuario.id == s.revisado_por).first()
                 if resolutor:
@@ -390,14 +513,13 @@ async def obtener_historial_solicitudes(
         logger.error(f"Error en obtener_historial_solicitudes: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+
 @router.get("/estadisticas/historial")
 async def obtener_estadisticas_historial(
     db: Session = Depends(get_db),
     current_user = Depends(require_roles(["admin", "jefe_area", "jefe_direccion"]))
 ):
-    """
-    Obtiene estadísticas del historial de solicitudes
-    """
+    """Obtiene estadísticas del historial de solicitudes"""
     try:
         solicitudes = db.query(SolicitudCambio).filter(
             SolicitudCambio.estado.in_(["aprobada", "rechazada"])
@@ -408,16 +530,11 @@ async def obtener_estadisticas_historial(
         rechazadas = len([s for s in solicitudes if s.estado == "rechazada"])
         tasa_aprobacion = round((aprobadas / total) * 100, 1) if total > 0 else 0
         
-        # Por tipo
         por_tipo = {}
-        tipos = ["propio", "intercambio", "vacaciones", "permiso"]
-        for t in tipos:
-            count = len([s for s in solicitudes if s.tipo == t])
-            por_tipo[t] = count
+        for t in ["propio", "intercambio", "vacaciones", "permiso"]:
+            por_tipo[t] = len([s for s in solicitudes if s.tipo == t])
         
-        # Por mes (últimos 6 meses)
         por_mes = []
-        from datetime import timedelta
         hoy = date.today()
         
         for i in range(6):
@@ -453,14 +570,13 @@ async def obtener_estadisticas_historial(
         logger.error(f"Error en obtener_estadisticas_historial: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+
 @router.get("/planificaciones/pendientes")
 async def listar_planificaciones_pendientes(
     db: Session = Depends(get_db),
     current_user = Depends(require_roles(["admin"]))
 ):
-    """
-    Lista SOLO solicitudes de planificación mensual pendientes
-    """
+    """Lista SOLO solicitudes de planificación mensual pendientes"""
     try:
         solicitudes = db.query(SolicitudCambio).filter(
             SolicitudCambio.tipo == "planificacion_mensual",
@@ -487,37 +603,25 @@ async def listar_planificaciones_pendientes(
                 "historial": s.historial
             })
         
-        logger.info(f"✅ {len(result)} planificaciones pendientes encontradas")
         return result
         
     except Exception as e:
         logger.error(f"Error en listar_planificaciones_pendientes: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-# =====================================================
-# ✅ NUEVO ENDPOINT PARA MIS SOLICITUDES (RECOMENDADO - SIGUE EL PATRÓN QUE FUNCIONA)
-# =====================================================
 
 @router.get("/mis-solicitudes")
 async def obtener_mis_solicitudes(
     db: Session = Depends(get_db),
     current_user = Depends(require_roles(["admin", "jefe_area", "usuario"]))
 ):
-    """
-    Obtiene las solicitudes del usuario actual.
-    Este endpoint sigue el mismo patrón que /pendientes y /historial,
-    por lo que NO tendrá problemas de CORS.
-    Obtiene el personal_id automáticamente del token del usuario.
-    """
+    """Obtiene las solicitudes del usuario actual"""
     try:
         personal_id = current_user.personal_id
         
         if not personal_id:
             raise HTTPException(status_code=400, detail="Usuario no tiene personal_id asociado")
         
-        logger.info(f"🔍 Obteniendo mis solicitudes para personal_id: {personal_id}")
-        
-        # Buscar solicitudes donde el usuario es empleado_id o empleado2_id
         solicitudes = db.query(SolicitudCambio).filter(
             or_(
                 SolicitudCambio.empleado_id == personal_id,
@@ -528,18 +632,14 @@ async def obtener_mis_solicitudes(
             joinedload(SolicitudCambio.empleado2_rel)
         ).order_by(SolicitudCambio.created_at.desc()).all()
         
-        logger.info(f"📊 Encontradas {len(solicitudes)} solicitudes para el usuario")
-        
-        # Formatear respuesta usando la misma función que los demás endpoints
         return [formatear_solicitud(s) for s in solicitudes]
         
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"❌ Error en obtener_mis_solicitudes: {e}")
-        import traceback
-        traceback.print_exc()
+        logger.error(f"Error en obtener_mis_solicitudes: {e}")
         raise HTTPException(status_code=500, detail=f"Error interno: {str(e)}")
+
 
 # =====================================================
 # =====================================================
@@ -553,12 +653,7 @@ async def listar_por_personal(
     db: Session = Depends(get_db),
     current_user = Depends(require_roles(["admin", "jefe_area", "usuario"]))
 ):
-    """
-    Lista solicitudes de un personal específico
-    NOTA: Este endpoint puede tener problemas de CORS.
-    Se recomienda usar /mis-solicitudes para el usuario actual.
-    """
-    # Verificar permisos
+    """Lista solicitudes de un personal específico"""
     if "usuario" in current_user.roles and "admin" not in current_user.roles:
         if str(current_user.personal_id) != str(personal_id):
             raise HTTPException(status_code=403, detail="No autorizado")
@@ -574,53 +669,12 @@ async def listar_por_personal(
             joinedload(SolicitudCambio.empleado2_rel)
         ).order_by(SolicitudCambio.created_at.desc()).all()
         
-        result = []
-        for s in solicitudes:
-            empleado = s.empleado_rel
-            result.append({
-                "id": s.id,
-                "tipo": s.tipo,
-                "estado": s.estado,
-                "fecha_solicitud": s.fecha_solicitud,
-                "fecha_cambio": s.fecha_cambio,
-                "motivo": s.motivo,
-                "observaciones": s.observaciones,
-                "empleado_id": s.empleado_id,
-                "empleado2_id": s.empleado2_id,
-                "turno_original": s.turno_original,
-                "turno_solicitado": s.turno_solicitado,
-                "turno_original_solicitante": s.turno_original_solicitante,
-                "turno_original_colega": s.turno_original_colega,
-                "turno_solicitante_recibe": s.turno_solicitante_recibe,
-                "turno_colega_recibe": s.turno_colega_recibe,
-                "validacion_dias_libres": s.validacion_dias_libres,
-                "documentos": s.documentos if s.documentos else [],
-                "historial": s.historial if s.historial else [],
-                "created_by": s.created_by,
-                "created_at": s.created_at,
-                "fecha_revision": s.fecha_revision,
-                "revisado_por": s.revisado_por,
-                "comentario_revision": s.comentario_revision,
-                "nivel_actual": s.nivel_actual,
-                "proximo_nivel": s.proximo_nivel,
-                "niveles_pendientes": s.niveles_pendientes if s.niveles_pendientes else [],
-                "niveles_aprobados": s.niveles_aprobados if s.niveles_aprobados else [],
-                "empleado_nombre": empleado.nombre if empleado else None,
-                "empleado_grado": empleado.grado if empleado else None,
-                "area_nombre": empleado.area if empleado else None,
-                "empleado2_nombre": s.empleado2_rel.nombre if s.empleado2_rel else None,
-                "empleado2_grado": s.empleado2_rel.grado if s.empleado2_rel else None,
-                "fecha_inicio": s.fecha_inicio.isoformat() if s.fecha_inicio else None,
-                "fecha_fin": s.fecha_fin.isoformat() if s.fecha_fin else None,
-                "dias_solicitados": s.dias_solicitados,
-                "tipo_vacaciones": s.tipo_vacaciones
-            })
-        
-        return result
+        return [formatear_solicitud(s) for s in solicitudes]
         
     except Exception as e:
         logger.error(f"Error en listar_por_personal: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
 
 @router.post("/planificacion/{solicitud_id}/aprobar")
 async def aprobar_planificacion_mensual(
@@ -628,9 +682,7 @@ async def aprobar_planificacion_mensual(
     db: Session = Depends(get_db),
     current_user: Usuario = Depends(require_roles(["admin"]))
 ):
-    """
-    APRUEBA una planificación de área
-    """
+    """APRUEBA una planificación de área"""
     try:
         solicitud = db.query(SolicitudCambio).filter(
             SolicitudCambio.id == solicitud_id,
@@ -647,8 +699,6 @@ async def aprobar_planificacion_mensual(
         if not datos_horario or not isinstance(datos_horario, list):
             raise HTTPException(status_code=400, detail="La solicitud no contiene datos de planificación válidos")
         
-        logger.info(f"📦 Procesando {len(datos_horario)} registros de planificación")
-        
         jefe = db.query(Personal).filter(Personal.id == solicitud.empleado_id).first()
         if not jefe or not jefe.area:
             raise HTTPException(status_code=400, detail="No se pudo determinar el área del solicitante")
@@ -656,8 +706,6 @@ async def aprobar_planificacion_mensual(
         area = jefe.area
         mes = solicitud.fecha_cambio.month
         anio = solicitud.fecha_cambio.year
-        
-        logger.info(f"📍 Área: {area}, Mes: {mes}/{anio}")
         
         fecha_inicio = date(anio, mes, 1)
         if mes == 12:
@@ -672,12 +720,10 @@ async def aprobar_planificacion_mensual(
         ).first()
         
         if borrador:
-            logger.info(f"📋 Borrador encontrado, actualizando estado a aprobado")
             borrador.estado = 'aprobado'
             borrador.fecha_aprobacion = datetime.utcnow()
             borrador.datos = datos_horario
         else:
-            logger.info(f"📋 Creando nuevo registro de borrador aprobado")
             borrador = PlanificacionBorrador(
                 area=area,
                 mes=mes,
@@ -709,17 +755,15 @@ async def aprobar_planificacion_mensual(
             'L': 'LIB', '24': 'DIA24', 'D24': 'DIA24'
         }
         
-        for idx, registro in enumerate(datos_horario):
+        for registro in datos_horario:
             try:
                 if not registro.get('personal_id') or not registro.get('fecha') or not registro.get('turno_codigo'):
-                    logger.warning(f"⚠️ Registro {idx} inválido: {registro}")
                     errores += 1
                     continue
                 
                 turno_codigo = registro['turno_codigo']
                 if turno_codigo in mapa_turnos:
                     turno_codigo = mapa_turnos[turno_codigo]
-                    logger.debug(f"🔄 Normalizado: {registro['turno_codigo']} -> {turno_codigo}")
                 
                 nuevo = Planificacion(
                     personal_id=UUID(registro["personal_id"]) if isinstance(registro["personal_id"], str) else registro["personal_id"],
@@ -733,7 +777,7 @@ async def aprobar_planificacion_mensual(
                 registros_creados += 1
                 
             except Exception as e:
-                logger.error(f"❌ Error insertando registro {idx}: {e}")
+                logger.error(f"❌ Error insertando registro: {e}")
                 errores += 1
                 continue
         
@@ -767,7 +811,7 @@ async def aprobar_planificacion_mensual(
         except ImportError:
             pass
         
-        resultado = {
+        return {
             "message": "Planificación aprobada exitosamente",
             "solicitud_id": str(solicitud.id),
             "area": area,
@@ -778,17 +822,13 @@ async def aprobar_planificacion_mensual(
             "errores": errores
         }
         
-        logger.info(f"✅ {resultado}")
-        return resultado
-        
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"❌ Error en aprobar_planificacion_mensual: {e}")
-        import traceback
-        traceback.print_exc()
         db.rollback()
         raise HTTPException(status_code=500, detail=f"Error interno: {str(e)}")
+
 
 @router.post("/planificacion/{solicitud_id}/rechazar")
 async def rechazar_planificacion_mensual(
@@ -797,9 +837,7 @@ async def rechazar_planificacion_mensual(
     db: Session = Depends(get_db),
     current_user: Usuario = Depends(require_roles(["admin"]))
 ):
-    """
-    RECHAZA una planificación de área - PRESERVA los datos
-    """
+    """RECHAZA una planificación de área - PRESERVA los datos"""
     try:
         solicitud = db.query(SolicitudCambio).filter(
             SolicitudCambio.id == solicitud_id,
@@ -820,9 +858,6 @@ async def rechazar_planificacion_mensual(
         mes = solicitud.fecha_cambio.month
         anio = solicitud.fecha_cambio.year
         
-        logger.info(f"📝 Rechazando planificación para área: {area}, mes: {mes}/{anio}")
-        logger.info(f"💬 Motivo: {comentario}")
-        
         borrador = db.query(PlanificacionBorrador).filter(
             PlanificacionBorrador.area == area,
             PlanificacionBorrador.mes == mes,
@@ -830,20 +865,11 @@ async def rechazar_planificacion_mensual(
         ).first()
         
         if borrador:
-            logger.info(f"📋 Borrador encontrado con ID: {borrador.id}")
             borrador.estado = 'rechazado'
             borrador.comentario_rechazo = comentario
-            logger.info(f"✅ Borrador actualizado a estado: rechazado")
-            logger.info(f"✅ Datos preservados: {len(borrador.datos) if borrador.datos else 0} registros")
-            
         else:
-            logger.warning("⚠️ No se encontró borrador, creando uno nuevo desde la solicitud")
-            
             if not solicitud.turno_original:
-                logger.error("❌ La solicitud no tiene datos en turno_original")
                 raise HTTPException(status_code=400, detail="La solicitud no contiene datos de planificación")
-            
-            logger.info(f"📦 Creando borrador con {len(solicitud.turno_original)} registros")
             
             borrador = PlanificacionBorrador(
                 area=area,
@@ -856,7 +882,6 @@ async def rechazar_planificacion_mensual(
                 comentario_rechazo=comentario
             )
             db.add(borrador)
-            logger.info(f"✅ Borrador creado con {len(solicitud.turno_original)} registros")
         
         solicitud.estado = "rechazada"
         solicitud.fecha_revision = datetime.utcnow()
@@ -883,8 +908,6 @@ async def rechazar_planificacion_mensual(
         
         db.commit()
         
-        logger.info(f"✅ Planificación {solicitud_id} rechazada - DATOS PRESERVADOS")
-        
         return {
             "message": "Planificación rechazada - los datos se han preservado",
             "solicitud_id": str(solicitud.id),
@@ -901,10 +924,9 @@ async def rechazar_planificacion_mensual(
         raise
     except Exception as e:
         logger.error(f"❌ Error en rechazar_planificacion_mensual: {e}")
-        import traceback
-        traceback.print_exc()
         db.rollback()
         raise HTTPException(status_code=500, detail=str(e))
+
 
 @router.post("/")
 async def crear_solicitud(
@@ -913,20 +935,16 @@ async def crear_solicitud(
     db: Session = Depends(get_db),
     current_user = Depends(require_roles(["admin", "usuario"]))
 ):
-    """
-    Crea una nueva solicitud (vacaciones, cambio de turno, intercambio, etc.)
-    """
+    """Crea una nueva solicitud (vacaciones, cambio de turno, intercambio, etc.)"""
     try:
         solicitud_data = json.loads(data)
         fecha_cambio = date.fromisoformat(solicitud_data["fecha_cambio"])
         
-        # Extraer campos de vacaciones
         fecha_inicio = solicitud_data.get("fecha_inicio")
         fecha_fin = solicitud_data.get("fecha_fin")
         dias_solicitados = solicitud_data.get("dias_solicitados")
         tipo_vacaciones = solicitud_data.get("tipo_vacaciones")
         
-        # También buscar dentro del campo "datos" (por compatibilidad)
         if not fecha_inicio and solicitud_data.get("datos"):
             datos_extra = solicitud_data.get("datos", {})
             fecha_inicio = datos_extra.get("fecha_inicio")
@@ -934,9 +952,6 @@ async def crear_solicitud(
             dias_solicitados = datos_extra.get("dias_solicitados")
             tipo_vacaciones = datos_extra.get("tipo_vacaciones")
         
-        logger.info(f"📥 Campos de vacaciones: fecha_inicio={fecha_inicio}, fecha_fin={fecha_fin}, dias={dias_solicitados}, tipo={tipo_vacaciones}")
-        
-        # Convertir fechas de vacaciones
         fecha_inicio_date = None
         fecha_fin_date = None
         if fecha_inicio:
@@ -954,7 +969,7 @@ async def crear_solicitud(
         area_empleado = empleado.area if empleado else None
         cadena_jerarquica = obtener_cadena_jerarquica(area_empleado)
         
-        # VALIDACIONES (solo para cambios de turno e intercambio)
+        # Validaciones para cambios de turno
         if solicitud_data["tipo"] in ["propio", "intercambio"]:
             if solicitud_data["tipo"] == "propio":
                 if not validar_disponibilidad_turno(db, solicitud_data["empleado_id"], fecha_cambio):
@@ -998,7 +1013,7 @@ async def crear_solicitud(
                 if not valido_col:
                     raise HTTPException(status_code=400, detail=f"Colega: {msg_col}")
         
-        # PROCESAR DOCUMENTOS
+        # Procesar documentos
         documentos = []
         if archivos:
             for archivo in archivos:
@@ -1012,7 +1027,7 @@ async def crear_solicitud(
         
         usuario_nombre = obtener_nombre_usuario(db, current_user)
         
-        # Crear solicitud con campos de vacaciones
+        # Crear solicitud
         solicitud = SolicitudCambio(
             tipo=solicitud_data["tipo"],
             fecha_cambio=fecha_cambio,
@@ -1028,7 +1043,6 @@ async def crear_solicitud(
             turno_colega_recibe=solicitud_data.get("turno_colega_recibe"),
             validacion_dias_libres=solicitud_data.get("validacion_dias_libres"),
             documentos=documentos,
-            # Campos de vacaciones
             fecha_inicio=fecha_inicio_date,
             fecha_fin=fecha_fin_date,
             dias_solicitados=dias_solicitados,
@@ -1063,19 +1077,19 @@ async def crear_solicitud(
         db.rollback()
         raise HTTPException(status_code=500, detail=str(e))
 
+
 @router.post("/{id}/aprobar")
 async def aprobar_solicitud(
     id: UUID,
     update_data: SolicitudCambioUpdate,
     db: Session = Depends(get_db),
-    current_user = Depends(require_roles(["admin", "jefe_area", "jefe_direccion"]))
+    current_user = Depends(require_roles(["admin", "jefe_area", "jefe_direccion", "jefe_grupo", "jefe_departamento", "recursos_humanos", "oficina_central"]))
 ):
     """
     Aprueba una solicitud de cambio de turno o vacaciones
     Soporta múltiples niveles de aprobación según el área del empleado
     """
     try:
-        # Obtener la solicitud actual
         solicitud = db.query(SolicitudCambio).filter(SolicitudCambio.id == id).first()
         if not solicitud:
             raise HTTPException(status_code=404, detail="Solicitud no encontrada")
@@ -1083,39 +1097,29 @@ async def aprobar_solicitud(
         if solicitud.estado != "pendiente":
             raise HTTPException(status_code=400, detail=f"La solicitud ya está {solicitud.estado}")
         
-        # Preparar datos
         fecha_ahora = datetime.utcnow()
         usuario_nombre = obtener_nombre_usuario(db, current_user)
         nivel_aprobado = solicitud.proximo_nivel
         
-        # Validar permisos
+        # Validar permisos usando la nueva función
         if "admin" not in current_user.roles:
             usuario_aprobador = db.query(Personal).filter(Personal.id == current_user.personal_id).first()
             if not usuario_aprobador:
                 raise HTTPException(status_code=403, detail="Usuario no encontrado")
             
-            if nivel_aprobado == "jefe_area":
-                areas_jefatura = usuario_aprobador.areas_que_jefatura or []
-                if solicitud.empleado_rel.area not in areas_jefatura:
-                    raise HTTPException(status_code=403, detail="No tiene permisos para aprobar esta solicitud")
-            elif nivel_aprobado == "jefe_direccion":
-                if usuario_aprobador.area_que_jefatura_direccion != solicitud.empleado_rel.area:
-                    raise HTTPException(status_code=403, detail="No tiene permisos para aprobar esta solicitud")
+            if not puede_aprobar_solicitud(usuario_aprobador, solicitud):
+                raise HTTPException(status_code=403, detail="No tiene permisos para aprobar esta solicitud")
         
-        # Obtener listas actuales
         pendientes = solicitud.niveles_pendientes or []
         aprobados = solicitud.niveles_aprobados or []
         
-        # Agregar el nivel actual a los aprobados
         if nivel_aprobado and nivel_aprobado not in aprobados:
             nuevos_aprobados = aprobados + [nivel_aprobado]
         else:
             nuevos_aprobados = aprobados
         
-        # Buscar el siguiente nivel pendiente
         siguiente_nivel = next((n for n in pendientes if n not in nuevos_aprobados), None)
         
-        # Determinar el nuevo estado
         if not siguiente_nivel:
             solicitud.estado = "aprobada"
             solicitud.nivel_actual = "aprobada"
@@ -1124,14 +1128,12 @@ async def aprobar_solicitud(
             solicitud.estado = "pendiente"
             solicitud.nivel_actual = "en_revision"
         
-        # Actualizar campos
         solicitud.proximo_nivel = siguiente_nivel
         solicitud.niveles_aprobados = nuevos_aprobados
         solicitud.fecha_revision = fecha_ahora
         solicitud.revisado_por = current_user.id
         solicitud.comentario_revision = update_data.comentario_revision
         
-        # Crear nuevo evento para el historial
         historial_actual = solicitud.historial or []
         
         nuevo_evento = {
@@ -1147,35 +1149,17 @@ async def aprobar_solicitud(
             "niveles_pendientes_restantes": [n for n in pendientes if n not in nuevos_aprobados]
         }
         
-        nueva_lista_historial = historial_actual + [nuevo_evento]
-        solicitud.historial = nueva_lista_historial
+        solicitud.historial = historial_actual + [nuevo_evento]
         
         db.commit()
         
-        # =====================================================
-        # 🆕 ACTUALIZAR PLANIFICACIÓN DESPUÉS DE APROBAR
-        # =====================================================
-        
-        # Si la solicitud está completamente aprobada
+        # Actualizar planificación si está completamente aprobada
         if solicitud.estado == "aprobada":
-            
-            # 🆕 PROCESAR VACACIONES (con timedelta)
             if solicitud.tipo == "vacaciones" and solicitud.fecha_inicio and solicitud.fecha_fin:
                 try:
-                    logger.info(f"🏖️ Procesando vacaciones para solicitud {id}")
-                    logger.info(f"   Fechas: {solicitud.fecha_inicio} → {solicitud.fecha_fin}")
-                    
                     dias_marcados = marcar_vacaciones_en_planificacion(
-                        db, 
-                        solicitud.empleado_id, 
-                        solicitud.fecha_inicio, 
-                        solicitud.fecha_fin, 
-                        current_user.id
+                        db, solicitud.empleado_id, solicitud.fecha_inicio, solicitud.fecha_fin, current_user.id
                     )
-                    
-                    logger.info(f"✅ Marcados {dias_marcados} días como VAC para empleado {solicitud.empleado_id}")
-                    
-                    # Agregar evento al historial
                     solicitud.historial.append({
                         "fecha": datetime.utcnow().isoformat(),
                         "usuario": str(current_user.id),
@@ -1186,120 +1170,68 @@ async def aprobar_solicitud(
                         "fecha_fin": solicitud.fecha_fin.isoformat()
                     })
                     db.commit()
-                    
                 except Exception as e:
                     logger.error(f"❌ Error procesando vacaciones: {e}")
-                    import traceback
-                    traceback.print_exc()
-                    solicitud.historial.append({
-                        "fecha": datetime.utcnow().isoformat(),
-                        "usuario": str(current_user.id),
-                        "usuario_nombre": usuario_nombre,
-                        "accion": "error_vacaciones",
-                        "error": str(e)
-                    })
-                    db.commit()
             
-            # =====================================================
-            # ✅ PROCESAR CAMBIOS DE TURNO - CORREGIDO PARA INTERCAMBIO
-            # =====================================================
             elif solicitud.tipo in ["propio", "intercambio"]:
                 try:
-                    logger.info(f"🔄 Actualizando planificación para solicitud {id}")
-                    logger.info(f"   Tipo: {solicitud.tipo}")
-                    
                     fecha_cambio = solicitud.fecha_cambio
                     
-                    # =====================================================
-                    # CASO 1: CAMBIO PROPIO
-                    # =====================================================
                     if solicitud.tipo == "propio":
-                        # El solicitante cambia su turno
                         planificacion_solicitante = db.query(Planificacion).filter(
                             Planificacion.personal_id == solicitud.empleado_id,
                             Planificacion.fecha == fecha_cambio
                         ).first()
                         
                         if planificacion_solicitante:
-                            turno_anterior = planificacion_solicitante.turno_codigo
                             planificacion_solicitante.turno_codigo = solicitud.turno_solicitado
                             planificacion_solicitante.updated_at = datetime.utcnow()
-                            logger.info(f"   ✅ Solicitante: {turno_anterior} → {solicitud.turno_solicitado}")
                         else:
-                            nueva_planificacion = Planificacion(
+                            nueva = Planificacion(
                                 personal_id=solicitud.empleado_id,
                                 fecha=fecha_cambio,
                                 turno_codigo=solicitud.turno_solicitado,
                                 created_by=current_user.id
                             )
-                            db.add(nueva_planificacion)
-                            logger.info(f"   ✅ Creada nueva planificación para solicitante: {solicitud.turno_solicitado}")
+                            db.add(nueva)
                     
-                    # =====================================================
-                    # CASO 2: INTERCAMBIO - CORREGIDO ✅
-                    # =====================================================
-                    elif solicitud.tipo == "intercambio":
-                        # Validar que tenemos todos los datos necesarios
-                        if not solicitud.empleado2_id:
-                            logger.error("❌ Intercambio sin empleado2_id")
-                            raise ValueError("La solicitud de intercambio no tiene empleado2_id")
-                        
-                        # Usar los campos correctos de intercambio
-                        turno_que_recibe_solicitante = solicitud.turno_solicitante_recibe
-                        turno_que_recibe_colega = solicitud.turno_colega_recibe
-                        
-                        logger.info(f"   📋 Datos de intercambio:")
-                        logger.info(f"      Solicitante ({solicitud.empleado_id}) recibe: {turno_que_recibe_solicitante}")
-                        logger.info(f"      Colega ({solicitud.empleado2_id}) recibe: {turno_que_recibe_colega}")
-                        
-                        # 1. Actualizar planificación del SOLICITANTE (recibe el turno del colega)
-                        planificacion_solicitante = db.query(Planificacion).filter(
+                    elif solicitud.tipo == "intercambio" and solicitud.empleado2_id:
+                        # Solicitante recibe turno del colega
+                        plan_sol = db.query(Planificacion).filter(
                             Planificacion.personal_id == solicitud.empleado_id,
                             Planificacion.fecha == fecha_cambio
                         ).first()
                         
-                        if planificacion_solicitante:
-                            turno_anterior = planificacion_solicitante.turno_codigo
-                            planificacion_solicitante.turno_codigo = turno_que_recibe_solicitante
-                            planificacion_solicitante.updated_at = datetime.utcnow()
-                            logger.info(f"   ✅ Solicitante: {turno_anterior} → {turno_que_recibe_solicitante}")
+                        if plan_sol:
+                            plan_sol.turno_codigo = solicitud.turno_solicitante_recibe
+                            plan_sol.updated_at = datetime.utcnow()
                         else:
-                            # Crear planificación si no existe
-                            nueva_planificacion = Planificacion(
+                            db.add(Planificacion(
                                 personal_id=solicitud.empleado_id,
                                 fecha=fecha_cambio,
-                                turno_codigo=turno_que_recibe_solicitante,
+                                turno_codigo=solicitud.turno_solicitante_recibe,
                                 created_by=current_user.id
-                            )
-                            db.add(nueva_planificacion)
-                            logger.info(f"   ✅ Creada planificación para solicitante: {turno_que_recibe_solicitante}")
+                            ))
                         
-                        # 2. Actualizar planificación del COLEGA (recibe el turno del solicitante)
-                        planificacion_colega = db.query(Planificacion).filter(
+                        # Colega recibe turno del solicitante
+                        plan_col = db.query(Planificacion).filter(
                             Planificacion.personal_id == solicitud.empleado2_id,
                             Planificacion.fecha == fecha_cambio
                         ).first()
                         
-                        if planificacion_colega:
-                            turno_anterior = planificacion_colega.turno_codigo
-                            planificacion_colega.turno_codigo = turno_que_recibe_colega
-                            planificacion_colega.updated_at = datetime.utcnow()
-                            logger.info(f"   ✅ Colega: {turno_anterior} → {turno_que_recibe_colega}")
+                        if plan_col:
+                            plan_col.turno_codigo = solicitud.turno_colega_recibe
+                            plan_col.updated_at = datetime.utcnow()
                         else:
-                            # Crear planificación si no existe
-                            nueva_planificacion_colega = Planificacion(
+                            db.add(Planificacion(
                                 personal_id=solicitud.empleado2_id,
                                 fecha=fecha_cambio,
-                                turno_codigo=turno_que_recibe_colega,
+                                turno_codigo=solicitud.turno_colega_recibe,
                                 created_by=current_user.id
-                            )
-                            db.add(nueva_planificacion_colega)
-                            logger.info(f"   ✅ Creada planificación para colega: {turno_que_recibe_colega}")
+                            ))
                     
                     db.commit()
-                    logger.info(f"✅ Planificación actualizada para solicitud {id}")
                     
-                    # Agregar evento al historial
                     solicitud.historial.append({
                         "fecha": datetime.utcnow().isoformat(),
                         "usuario": str(current_user.id),
@@ -1312,19 +1244,8 @@ async def aprobar_solicitud(
                     
                 except Exception as e:
                     logger.error(f"❌ Error actualizando planificación: {e}")
-                    import traceback
-                    traceback.print_exc()
-                    solicitud.historial.append({
-                        "fecha": datetime.utcnow().isoformat(),
-                        "usuario": str(current_user.id),
-                        "usuario_nombre": usuario_nombre,
-                        "accion": "error_planificacion",
-                        "error": str(e)
-                    })
-                    db.commit()
         
         db.refresh(solicitud)
-        
         logger.info(f"✅ Solicitud {id} aprobada en nivel {nivel_aprobado}")
         
         return formatear_solicitud(solicitud)
@@ -1338,16 +1259,15 @@ async def aprobar_solicitud(
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
+
 @router.post("/{id}/rechazar")
 async def rechazar_solicitud(
     id: UUID,
     update_data: SolicitudCambioUpdate,
     db: Session = Depends(get_db),
-    current_user = Depends(require_roles(["admin", "jefe_area", "jefe_direccion"]))
+    current_user = Depends(require_roles(["admin", "jefe_area", "jefe_direccion", "jefe_grupo", "jefe_departamento", "recursos_humanos", "oficina_central"]))
 ):
-    """
-    Rechaza una solicitud de cambio de turno
-    """
+    """Rechaza una solicitud de cambio de turno"""
     try:
         solicitud = db.query(SolicitudCambio).filter(SolicitudCambio.id == id).first()
         if not solicitud:
@@ -1355,6 +1275,15 @@ async def rechazar_solicitud(
         
         if solicitud.estado != "pendiente":
             raise HTTPException(status_code=400, detail=f"La solicitud ya está {solicitud.estado}")
+        
+        # Validar permisos
+        if "admin" not in current_user.roles:
+            usuario_aprobador = db.query(Personal).filter(Personal.id == current_user.personal_id).first()
+            if not usuario_aprobador:
+                raise HTTPException(status_code=403, detail="Usuario no encontrado")
+            
+            if not puede_aprobar_solicitud(usuario_aprobador, solicitud):
+                raise HTTPException(status_code=403, detail="No tiene permisos para rechazar esta solicitud")
         
         solicitud.estado = "rechazada"
         solicitud.fecha_revision = datetime.utcnow()
@@ -1393,6 +1322,7 @@ async def rechazar_solicitud(
         db.rollback()
         raise HTTPException(status_code=500, detail=str(e))
 
+
 @router.get("/planificaciones/historial/{area}")
 async def obtener_historial_planificaciones(
     area: str,
@@ -1401,9 +1331,7 @@ async def obtener_historial_planificaciones(
     db: Session = Depends(get_db),
     current_user = Depends(require_roles(["admin", "jefe_area"]))
 ):
-    """
-    Obtiene el historial de envíos de planificación de un área
-    """
+    """Obtiene el historial de envíos de planificación de un área"""
     try:
         if "jefe_area" in current_user.roles and "admin" not in current_user.roles:
             jefe = db.query(Personal).filter(Personal.id == current_user.personal_id).first()
@@ -1446,15 +1374,14 @@ async def obtener_historial_planificaciones(
         logger.error(f"Error en obtener_historial_planificaciones: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+
 @router.get("/{id}")
 async def obtener_solicitud(
     id: UUID,
     db: Session = Depends(get_db),
     current_user = Depends(require_roles(["admin", "jefe_area", "usuario"]))
 ):
-    """
-    Obtiene una solicitud por ID
-    """
+    """Obtiene una solicitud por ID"""
     try:
         solicitud = db.query(SolicitudCambio).filter(
             SolicitudCambio.id == id
@@ -1478,15 +1405,14 @@ async def obtener_solicitud(
         logger.error(f"Error en obtener_solicitud: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+
 @router.get("/{id}/historial")
 async def obtener_historial_completo(
     id: UUID,
     db: Session = Depends(get_db),
     current_user = Depends(require_roles(["admin", "jefe_area", "usuario"]))
 ):
-    """
-    Obtiene el historial completo de una solicitud con todos los eventos
-    """
+    """Obtiene el historial completo de una solicitud con todos los eventos"""
     try:
         solicitud = db.query(SolicitudCambio).filter(SolicitudCambio.id == id).first()
         

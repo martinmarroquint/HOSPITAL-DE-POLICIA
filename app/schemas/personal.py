@@ -1,3 +1,7 @@
+# schemas/personal.py
+# VERSIÓN COMPLETA - CON SOPORTE PARA MÚLTIPLES TIPOS DE JEFATURA
+# Compatible con formato legacy (array) y nuevo (objeto)
+
 from pydantic import BaseModel, EmailStr, Field, validator
 from typing import Optional, List, Dict, Any
 from datetime import date, datetime
@@ -8,22 +12,51 @@ from uuid import UUID
 # =====================================================
 
 class PersonalBase(BaseModel):
-    dni: str = Field(..., min_length=1, max_length=8)  # Permitir valores temporales
+    # =====================================================
+    # CAMPOS DE IDENTIFICACIÓN
+    # =====================================================
+    dni: str = Field(..., min_length=1, max_length=8)
     cip: str
+    
+    # =====================================================
+    # CAMPOS PERSONALES
+    # =====================================================
     grado: str
     nombre: str
     sexo: Optional[str] = Field(None, description="Sexo del personal (M, F, No especificado)")
+    fecha_nacimiento: Optional[date] = None
+    
+    # =====================================================
+    # CAMPOS DE CONTACTO
+    # =====================================================
     email: EmailStr
     telefono: Optional[str] = None
-    fecha_nacimiento: Optional[date] = None
+    
+    # =====================================================
+    # CAMPOS LABORALES
+    # =====================================================
     area: str
     especialidad: Optional[str] = None
     numero_colegiatura: Optional[str] = None
     condicion: Optional[str] = None
     observaciones: Optional[str] = None
-    # ✅ CAMPO ACTUALIZADO: Ahora es una lista de áreas que jefatura
+    
+    # =====================================================
+    # CAMPOS DE JEFATURA (COMPATIBILIDAD DUAL)
+    # =====================================================
+    
+    # FORMATO LEGACY (ACTUAL - SIGUE FUNCIONANDO)
+    # Array plano de áreas que jefatura
     areas_que_jefatura: Optional[List[str]] = Field(default=[])
+    
+    # FORMATO NUEVO (ESTRUCTURADO POR TIPO DE JEFATURA)
+    # Objeto con arrays por tipo de jefatura
+    areas_jefatura: Optional[Dict[str, List[str]]] = Field(default={})
 
+    # =====================================================
+    # VALIDADORES
+    # =====================================================
+    
     @validator('dni')
     def validar_dni(cls, v):
         """Validar que el DNI tenga 8 dígitos, si no, marcar como pendiente"""
@@ -31,7 +64,6 @@ class PersonalBase(BaseModel):
         if not dni:
             return "PENDIENTE"
         
-        # Si tiene menos de 8 dígitos o no son dígitos, marcar como pendiente
         if not dni.isdigit() or len(dni) != 8:
             return "PENDIENTE"
         
@@ -48,31 +80,115 @@ class PersonalBase(BaseModel):
             return "No especificado"
         
         return v
+    
+    @validator('areas_jefatura')
+    def validar_areas_jefatura(cls, v):
+        """Validar que areas_jefatura tenga la estructura correcta"""
+        if v is None:
+            return {}
+        
+        # Asegurar que las claves esperadas existan
+        claves_esperadas = ['grupo', 'area', 'departamento', 'direccion']
+        resultado = {}
+        
+        for clave in claves_esperadas:
+            if clave in v and isinstance(v[clave], list):
+                resultado[clave] = v[clave]
+            else:
+                resultado[clave] = []
+        
+        return resultado
+
 
 class PersonalCreate(PersonalBase):
     fecha_ingreso: Optional[date] = None
     roles: List[str] = ["usuario"]
     activo: bool = True
+    
+    @validator('roles')
+    def validar_roles(cls, v):
+        """Validar que los roles sean válidos"""
+        roles_validos = [
+            'admin', 'jefe_grupo', 'jefe_area', 'jefe_departamento', 
+            'jefe_direccion', 'recursos_humanos', 'oficina_central',
+            'oficial_permanencia', 'control_qr', 'usuario'
+        ]
+        for rol in v:
+            if rol not in roles_validos:
+                raise ValueError(f"Rol inválido: {rol}")
+        return v
+    
+    @validator('areas_que_jefatura')
+    def validar_areas_jefatura_creacion(cls, v, values):
+        """Validar que jefe_area tenga al menos un área asignada"""
+        roles = values.get('roles', [])
+        
+        if 'jefe_area' in roles:
+            # Verificar formato legacy
+            areas_legacy = v or []
+            # Verificar formato nuevo
+            areas_nuevo = values.get('areas_jefatura', {})
+            areas_area = areas_nuevo.get('area', []) if areas_nuevo else []
+            
+            # También verificar áreas con prefijo en el legacy
+            areas_con_prefijo = [a for a in areas_legacy if a.startswith('area:')]
+            areas_sin_prefijo = [a for a in areas_legacy if ':' not in a]
+            
+            total_areas = len(areas_area) + len(areas_con_prefijo) + len(areas_sin_prefijo)
+            
+            if total_areas == 0:
+                raise ValueError("Los jefes de área deben tener al menos un área asignada")
+        
+        return v
+
 
 class PersonalUpdate(BaseModel):
+    # =====================================================
+    # CAMPOS DE IDENTIFICACIÓN
+    # =====================================================
     dni: Optional[str] = Field(None, min_length=1, max_length=8)
     cip: Optional[str] = None
+    
+    # =====================================================
+    # CAMPOS PERSONALES
+    # =====================================================
     grado: Optional[str] = None
     nombre: Optional[str] = None
     sexo: Optional[str] = None
+    fecha_nacimiento: Optional[date] = None
+    
+    # =====================================================
+    # CAMPOS DE CONTACTO
+    # =====================================================
     email: Optional[EmailStr] = None
     telefono: Optional[str] = None
-    fecha_nacimiento: Optional[date] = None
+    
+    # =====================================================
+    # CAMPOS LABORALES
+    # =====================================================
     area: Optional[str] = None
     especialidad: Optional[str] = None
     numero_colegiatura: Optional[str] = None
     condicion: Optional[str] = None
     observaciones: Optional[str] = None
+    fecha_ingreso: Optional[date] = None
+    
+    # =====================================================
+    # ESTADO Y ROLES
+    # =====================================================
     activo: Optional[bool] = None
     roles: Optional[List[str]] = None
-    # ✅ CAMPO ACTUALIZADO: Ahora es una lista de áreas que jefatura
+    
+    # =====================================================
+    # CAMPOS DE JEFATURA (COMPATIBILIDAD DUAL)
+    # =====================================================
     areas_que_jefatura: Optional[List[str]] = Field(default=[])
+    areas_jefatura: Optional[Dict[str, List[str]]] = Field(default={})
 
+    # =====================================================
+    # VALIDADORES
+    # =====================================================
+    
     @validator('dni')
     def validar_dni_actualizacion(cls, v):
         """Validar DNI en actualizaciones"""
@@ -96,6 +212,27 @@ class PersonalUpdate(BaseModel):
             return "No especificado"
         
         return v
+    
+    @validator('areas_jefatura')
+    def validar_areas_jefatura_update(cls, v):
+        """Validar que areas_jefatura tenga la estructura correcta"""
+        if v is None:
+            return {}
+        
+        claves_esperadas = ['grupo', 'area', 'departamento', 'direccion']
+        resultado = {}
+        
+        for clave in claves_esperadas:
+            if clave in v and isinstance(v[clave], list):
+                resultado[clave] = v[clave]
+            else:
+                resultado[clave] = []
+        
+        return resultado
+    
+    class Config:
+        from_attributes = True
+
 
 class PersonalResponse(PersonalBase):
     id: UUID
@@ -105,15 +242,16 @@ class PersonalResponse(PersonalBase):
     sexo: Optional[str] = "No especificado"
     created_at: datetime
     updated_at: Optional[datetime]
-    # ✅ CAMPO ACTUALIZADO: Ahora es una lista de áreas que jefatura
-    areas_que_jefatura: Optional[List[str]] = Field(default=[])
+    
+    # Campos de jefatura ya están en PersonalBase
+    # areas_que_jefatura y areas_jefatura se heredan
 
     class Config:
         from_attributes = True
 
 
 # =====================================================
-# SCHEMAS PARA CARGA MASIVA (ACTUALIZADO CON SEXO Y AREAS_JEFATURA)
+# SCHEMAS PARA CARGA MASIVA
 # =====================================================
 
 class CargaMasivaItem(BaseModel):
@@ -135,7 +273,8 @@ class CargaMasivaItem(BaseModel):
     ROLES: str
     NÚMERO_COLEGIATURA: Optional[str] = None
     OBSERVACIONES: Optional[str] = None
-    # ✅ CAMPO ACTUALIZADO: Puede ser múltiples áreas separadas por comas
+    
+    # Campo para áreas que jefatura (múltiples separadas por comas)
     # Ejemplo: "FARMACIA, RECURSOS HUMANOS, ADMINISTRACION"
     ÁREAS_JEFATURA: Optional[str] = None
     
@@ -149,7 +288,6 @@ class CargaMasivaItem(BaseModel):
             return "PENDIENTE"
         
         dni = str(v).strip()
-        # Si tiene menos de 8 dígitos o no son dígitos, marcar como pendiente
         if not dni.isdigit() or len(dni) != 8:
             return "PENDIENTE"
         
@@ -176,10 +314,8 @@ class CargaMasivaItem(BaseModel):
         """Validar teléfono si existe"""
         if v:
             telefono = str(v).strip()
-            # Limpiar el teléfono (quitar espacios, guiones, etc.)
             telefono = ''.join(c for c in telefono if c.isdigit())
             if telefono and len(telefono) not in [7, 8, 9, 10, 11, 12]:
-                # Si no tiene el formato correcto, devolver como está pero marcar en advertencias
                 return v
             return telefono
         return v
@@ -189,7 +325,6 @@ class CargaMasivaItem(BaseModel):
         """Validar formato de fecha - si es inválida, devolver None"""
         if v:
             try:
-                # Intentar parsear la fecha
                 fecha_str = str(v).strip()
                 if fecha_str:
                     datetime.strptime(fecha_str, '%Y-%m-%d')
@@ -197,6 +332,26 @@ class CargaMasivaItem(BaseModel):
             except:
                 pass
         return None
+    
+    @validator('ROLES')
+    def validar_roles(cls, v):
+        """Validar que los roles sean válidos"""
+        if not v:
+            return "usuario"
+        
+        roles_validos = [
+            'admin', 'jefe_grupo', 'jefe_area', 'jefe_departamento',
+            'jefe_direccion', 'recursos_humanos', 'oficina_central',
+            'oficial_permanencia', 'control_qr', 'usuario'
+        ]
+        
+        roles = [r.strip().lower() for r in v.split(',') if r.strip()]
+        roles_validados = [r for r in roles if r in roles_validos]
+        
+        if not roles_validados:
+            return "usuario"
+        
+        return ','.join(roles_validados)
     
     def get_areas_jefatura_list(self) -> List[str]:
         """
@@ -206,7 +361,6 @@ class CargaMasivaItem(BaseModel):
         if not self.ÁREAS_JEFATURA:
             return []
         
-        # Separar por comas, limpiar espacios y convertir a mayúsculas
         areas = [
             area.strip().upper() 
             for area in self.ÁREAS_JEFATURA.split(',') 
@@ -214,9 +368,17 @@ class CargaMasivaItem(BaseModel):
         ]
         return areas
     
+    def get_roles_list(self) -> List[str]:
+        """
+        Convierte el string de roles en una lista
+        """
+        if not self.ROLES:
+            return ["usuario"]
+        
+        return [r.strip().lower() for r in self.ROLES.split(',') if r.strip()]
+    
     class Config:
         from_attributes = True
-        # Permitir nombres de campos con espacios y tildes
         alias_generator = None
         populate_by_name = True
 
@@ -305,5 +467,22 @@ class PersonalConEstadisticas(PersonalResponse):
     """
     estadisticas: Optional[PersonalEstadisticas] = None
 
+    class Config:
+        from_attributes = True
+
+
+# =====================================================
+# SCHEMA PARA INFORMACIÓN DE JEFATURA (RESUMEN)
+# =====================================================
+
+class JefaturaResumen(BaseModel):
+    """
+    Resumen de jefaturas de un usuario
+    """
+    tiene_acceso_global: bool = False
+    roles_jefatura: List[str] = []
+    areas_por_tipo: Dict[str, List[str]] = Field(default_factory=dict)
+    todas_las_areas: List[str] = []
+    
     class Config:
         from_attributes = True
