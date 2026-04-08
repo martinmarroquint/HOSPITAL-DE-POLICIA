@@ -5,28 +5,32 @@ from passlib.context import CryptContext
 from app.config import settings
 
 # =====================================================
-# ✅ CONFIGURACIÓN CORREGIDA: SOPORTE PARA BCRYPT Y ARGON2
+# ✅ CONFIGURACIÓN HÍBRIDA (RECOMENDADA)
 # =====================================================
-# Ahora puede verificar contraseñas en AMBOS formatos:
-# - BCRYPT (para usuarios nuevos como jesus@administracion.com)
-# - ARGON2 (para usuarios existentes de la base de datos original)
+# - VERIFICA: Ambos formatos (bcrypt y Argon2)
+# - GENERA: SOLO Argon2 (evita el bug de bcrypt en reseteos)
+#
+# Beneficios:
+# ✅ Usuarios existentes con bcrypt: Siguen funcionando
+# ✅ Nuevos passwords/reseteos: Usan Argon2 (sin errores)
+# ✅ Migración gradual y transparente
 # =====================================================
 
 pwd_context = CryptContext(
-    schemes=["bcrypt", "argon2"],  # ← CAMBIADO: primero bcrypt, luego argon2
+    schemes=["argon2", "bcrypt"],  # ← Argon2 PRIMERO = default para generar
     deprecated="auto",
-    # Configuración para bcrypt
-    bcrypt__rounds=12,
-    # Configuración para argon2
+    # Configuración para Argon2 (usado para NUEVOS hashes)
     argon2__rounds=4,
     argon2__memory_cost=65536,
-    argon2__parallelism=4
+    argon2__parallelism=4,
+    # Configuración para bcrypt (SOLO para verificar hashes antiguos)
+    bcrypt__rounds=12
 )
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
     """
-    Verifica si la contraseña plana coincide con el hash
-    AHORA SOPORTA TANTO BCRYPT COMO ARGON2
+    Verifica si la contraseña plana coincide con el hash.
+    SOPORTA TANTO BCRYPT COMO ARGON2
     
     Args:
         plain_password: Contraseña en texto plano
@@ -40,20 +44,21 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
         # y usa el esquema correcto (bcrypt o argon2)
         return pwd_context.verify(plain_password, hashed_password)
     except Exception as e:
-        print(f"Error verificando password: {e}")
+        print(f"❌ Error verificando password: {e}")
         return False
 
 def get_password_hash(password: str) -> str:
     """
-    Genera hash de contraseña usando bcrypt (más compatible)
+    Genera hash de contraseña usando ARGON2 (evita el bug de bcrypt)
     
     Args:
         password: Contraseña en texto plano
     
     Returns:
-        str: Hash de la contraseña en formato bcrypt
+        str: Hash de la contraseña en formato Argon2
     """
-    return pwd_context.hash(password)
+    # Forzar explícitamente Argon2 para evitar problemas con bcrypt
+    return pwd_context.hash(password, scheme="argon2")
 
 def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:
     """
