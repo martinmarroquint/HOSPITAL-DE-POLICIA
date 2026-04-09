@@ -1,10 +1,13 @@
+# D:\Por si fallamos en la actualizacion\back\app\api\auth.py
+# VERSIÓN COMPLETA - CON ENDPOINT DE EMERGENCIA perfil-completo
+
 from fastapi import APIRouter, Depends, HTTPException, status, Body
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
 from datetime import timedelta, datetime
 from typing import Any, List, Optional
 from uuid import UUID
-from pydantic import BaseModel, Field  # ✅ Importación adicional para el schema
+from pydantic import BaseModel, Field
 
 from app.database import get_db
 from app.core.security import create_access_token, verify_password, get_password_hash
@@ -35,9 +38,13 @@ class ResetPasswordRequest(BaseModel):
 # =====================================================
 def obtener_datos_personal(db: Session, personal_id: UUID):
     """Obtiene los datos de personal incluyendo roles y áreas que jefatura"""
+    if not personal_id:
+        return None
+    
     personal = db.query(Personal).filter(Personal.id == personal_id).first()
     if not personal:
         return None
+    
     return {
         "nombre": personal.nombre,
         "grado": personal.grado,
@@ -153,7 +160,7 @@ async def check_user(
         "exists": True,
         "email": user.email,
         "username": user.username,
-        "personal_id": str(user.personal_id),
+        "personal_id": str(user.personal_id) if user.personal_id else None,
         "hash_type": hash_type,
         "hash_prefix": user.password_hash[:30] if user.password_hash else None,
         "is_active": user.activo,
@@ -210,6 +217,79 @@ async def get_perfil(
             "cip": None,
             "areas_que_jefatura": []
         }
+
+
+# =====================================================
+# 🆕 ENDPOINT DE EMERGENCIA - SIEMPRE DEVUELVE DATOS
+# =====================================================
+@router.get("/perfil-completo")
+async def get_perfil_completo(
+    current_user: Usuario = Depends(get_current_active_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Endpoint que SIEMPRE devuelve datos de personal.
+    Busca por ID y si no encuentra, busca por nombre derivado del email.
+    """
+    print(f"\n🔥 [PERFIL-COMPLETO] Buscando datos para: {current_user.email}")
+    print(f"   personal_id: {current_user.personal_id}")
+    
+    personal = None
+    
+    # 1. Intentar buscar por ID
+    if current_user.personal_id:
+        personal = db.query(Personal).filter(Personal.id == current_user.personal_id).first()
+        if personal:
+            print(f"✅ [PERFIL-COMPLETO] Encontrado por ID: {personal.nombre}")
+    
+    # 2. Si no encuentra, buscar por nombre derivado del email
+    if not personal:
+        nombre_email = current_user.email.split('@')[0].replace('.', ' ').upper()
+        print(f"   Buscando por nombre similar a: {nombre_email}")
+        
+        # Buscar en personal por coincidencia parcial
+        personal = db.query(Personal).filter(
+            Personal.nombre.ilike(f"%{nombre_email}%")
+        ).first()
+        
+        if personal:
+            print(f"✅ [PERFIL-COMPLETO] Encontrado por nombre: {personal.nombre}")
+    
+    # 3. Si sigue sin encontrar, crear datos de emergencia
+    if not personal:
+        nombre_emergencia = current_user.email.split('@')[0].replace('.', ' ').upper()
+        print(f"⚠️ [PERFIL-COMPLETO] Usando datos de emergencia: {nombre_emergencia}")
+        
+        return {
+            "id": current_user.id,
+            "email": current_user.email,
+            "personal_id": current_user.personal_id,
+            "nombre": nombre_emergencia,
+            "grado": "",
+            "area": "",
+            "dni": "",
+            "cip": "",
+            "roles": current_user.roles,
+            "activo": current_user.activo,
+            "ultimo_acceso": current_user.ultimo_acceso,
+            "areas_que_jefatura": []
+        }
+    
+    # 4. Devolver datos reales del personal encontrado
+    return {
+        "id": current_user.id,
+        "email": current_user.email,
+        "personal_id": personal.id,
+        "nombre": personal.nombre,
+        "grado": personal.grado or "",
+        "area": personal.area or "",
+        "dni": personal.dni or "",
+        "cip": personal.cip or "",
+        "roles": personal.roles or current_user.roles,
+        "activo": current_user.activo,
+        "ultimo_acceso": current_user.ultimo_acceso,
+        "areas_que_jefatura": personal.areas_que_jefatura or []
+    }
 
 
 @router.get("/verificar")
@@ -419,17 +499,13 @@ async def actualizar_usuario_auth(
 @router.post("/reset-password")
 @router.post("/usuarios/{usuario_id}/reset-password")
 async def reset_password_usuario(
-    request: ResetPasswordRequest,  # ✅ AHORA USA EL SCHEMA EXPLÍCITO
+    request: ResetPasswordRequest,
     usuario_id: Optional[UUID] = None,
     db: Session = Depends(get_db),
     current_user: Usuario = Depends(require_roles(["admin"]))
 ):
     """
     Resetea la contraseña de un usuario.
-    
-    ⚠️ CORREGIDO: Ahora usa un schema Pydantic explícito (ResetPasswordRequest)
-    que evita el error 500 por parsing incorrecto del body.
-    
     Se puede llamar de dos formas:
     1. POST /auth/reset-password con {"personal_id": "...", "nueva_password": "..."}
     2. POST /auth/usuarios/{usuario_id}/reset-password con {"nueva_password": "..."}
@@ -437,18 +513,15 @@ async def reset_password_usuario(
     try:
         usuario = None
         
-        # Buscar por usuario_id en URL
         if usuario_id:
             usuario = db.query(Usuario).filter(Usuario.id == usuario_id).first()
         
-        # Si no se encontró, buscar por personal_id en el body
         if not usuario and request.personal_id:
             usuario = db.query(Usuario).filter(Usuario.personal_id == request.personal_id).first()
         
         if not usuario:
             raise HTTPException(status_code=404, detail="Usuario no encontrado")
         
-        # Actualizar contraseña
         usuario.password_hash = get_password_hash(request.nueva_password)
         db.commit()
         
@@ -463,14 +536,12 @@ async def reset_password_usuario(
     except HTTPException:
         raise
     except Exception as e:
-        # Log del error para debugging
         import traceback
         import logging
         logger = logging.getLogger(__name__)
         logger.error(f"❌ Error en reset_password_usuario: {str(e)}")
         logger.error(traceback.format_exc())
         
-        # Devolver error 500 con mensaje claro
         raise HTTPException(
             status_code=500,
             detail=f"Error interno al resetear contraseña: {str(e)}"
@@ -501,15 +572,12 @@ async def obtener_auth_id_por_personal(
 
 @router.post("/generar-password-temporal")
 async def generar_password_temporal(
-    personal_id: UUID = Body(..., embed=True),  # ✅ embed=True para aceptar {"personal_id": "..."}
+    personal_id: UUID = Body(..., embed=True),
     db: Session = Depends(get_db),
     current_user: Usuario = Depends(require_roles(["admin"]))
 ):
     """
     Genera una contraseña temporal para un usuario.
-    
-    ✅ ENDPOINT QUE SÍ FUNCIONA CORRECTAMENTE
-    Recomendado usar este en lugar de /reset-password si persisten problemas.
     """
     personal = db.query(Personal).filter(Personal.id == personal_id).first()
     if not personal:
@@ -610,10 +678,8 @@ async def debug_my_roles(
     db: Session = Depends(get_db)
 ):
     """DEBUG: Muestra los roles actuales del usuario desde ambas tablas"""
-    # Obtener roles desde Usuario
     user_roles = current_user.roles
     
-    # Obtener roles desde Personal
     personal_roles = []
     if current_user.personal_id:
         personal = db.query(Personal).filter(Personal.id == current_user.personal_id).first()
