@@ -227,7 +227,7 @@ async def health_check():
 async def registros_hoy(
     fecha: date = Query(default_factory=date.today),
     db: Session = Depends(get_db),
-    current_user = Depends(require_roles(["admin", "oficial_permanencia", "jefe_area"]))
+    current_user = Depends(require_roles(["admin", "oficial_permanencia", "jefe_area", "control_qr"]))
 ):
     """Endpoint SIMPLE para obtener registros de hoy"""
     try:
@@ -283,7 +283,7 @@ async def get_registros_por_rango(
     fecha_inicio: date = Query(...),
     fecha_fin: date = Query(...),
     db: Session = Depends(get_db),
-    current_user = Depends(require_roles(["admin", "oficial_permanencia", "jefe_area"]))
+    current_user = Depends(require_roles(["admin", "oficial_permanencia", "jefe_area", "control_qr"]))
 ):
     """
     Obtener registros de asistencia por rango de fechas
@@ -743,7 +743,7 @@ async def registro_directo(
     personal_id: UUID = Body(...),
     tipo: str = Body(...),
     db: Session = Depends(get_db),
-    current_user: Usuario = Depends(require_roles(["admin", "oficial_permanencia"]))
+    current_user: Usuario = Depends(require_roles(["admin", "oficial_permanencia", "control_qr"]))
 ):
     """Registro directo de asistencia - SIN QR (con cálculo de incidencias)"""
     try:
@@ -823,7 +823,7 @@ async def registro_manual(
     justificacion: Optional[str] = Body(None),
     fecha_registro: Optional[datetime] = Body(None),
     db: Session = Depends(get_db),
-    current_user: Usuario = Depends(require_roles(["admin", "oficial_permanencia"]))
+    current_user: Usuario = Depends(require_roles(["admin", "oficial_permanencia", "control_qr"]))
 ):
     """Registro manual de asistencia con justificación"""
     try:
@@ -903,7 +903,7 @@ async def get_asistencia_personal(
     fecha_inicio: Optional[date] = Query(None),
     fecha_fin: Optional[date] = Query(None),
     db: Session = Depends(get_db),
-    current_user = Depends(require_roles(["admin", "oficial_permanencia", "jefe_area"]))
+    current_user = Depends(require_roles(["admin", "oficial_permanencia", "jefe_area", "control_qr"]))
 ):
     """Obtener historial de asistencia de un empleado específico"""
     try:

@@ -109,7 +109,7 @@ ROLES_VALIDOS = [
 ]
 
 ROLES_JEFATURA = ['jefe_grupo', 'jefe_area', 'jefe_departamento', 'jefe_direccion']
-ROLES_ACCESO_GLOBAL = ['admin', 'recursos_humanos', 'oficina_central']
+ROLES_ACCESO_GLOBAL = ['admin', 'recursos_humanos', 'oficina_central', 'oficial_permanencia', 'control_qr']
 
 # =====================================================
 # FUNCIÓN AUXILIAR PARA GENERAR EMAIL
@@ -240,7 +240,7 @@ async def listar_personal(
 @router.get("/me/jefatura", response_model=JefaturaResumen)
 async def obtener_mi_jefatura(
     db: Session = Depends(get_db),
-    current_user: Usuario = Depends(require_roles(["admin", "jefe_area", "jefe_grupo", "jefe_departamento", "jefe_direccion", "recursos_humanos", "oficina_central", "usuario"]))
+    current_user: Usuario = Depends(require_roles(["admin", "jefe_area", "jefe_grupo", "jefe_departamento", "jefe_direccion", "recursos_humanos", "oficina_central", "oficial_permanencia", "control_qr", "usuario"]))
 ):
     personal = db.query(Personal).filter(Personal.id == current_user.personal_id).first()
     if not personal:
