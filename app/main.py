@@ -1,3 +1,6 @@
+# app/main.py
+# VERSIÓN ESTABLE - SOLO SE AGREGA EL TAG DE PUBLICACIONES
+
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
@@ -58,12 +61,17 @@ app = FastAPI(
         {"name": "Solicitudes de Cambio", "description": "Solicitudes de cambio de turno"},
         {"name": "QR", "description": "Generación y validación de códigos QR"},
         {"name": "Configuración Mensual", "description": "Configuración de parámetros mensuales"},
+        # =====================================================
+        # 🆕 ÚNICO CAMBIO: AGREGAR TAG DE PUBLICACIONES
+        # =====================================================
+        {"name": "Publicaciones", "description": "Canal interno de comunicaciones - Publicaciones y anuncios"},
+        # =====================================================
         {"name": "Sistema", "description": "Endpoints de sistema y monitoreo"}
     ]
 )
 
 # =====================================================
-# 🚀 CONFIGURACIÓN CORS - CORREGIDA PARA PRODUCCIÓN
+# 🚀 CONFIGURACIÓN CORS - ¡NO SE TOCA! ESTABLE
 # =====================================================
 
 ALLOWED_ORIGINS = [
@@ -91,7 +99,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
-    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH", "HEAD"],  # ✅ HEAD agregado
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH", "HEAD"],
     allow_headers=["Content-Type", "Authorization", "X-Requested-With", "Accept"],
     expose_headers=["X-Process-Time"],
     max_age=86400,
@@ -100,7 +108,7 @@ app.add_middleware(
 logger.info(f"✅ CORS configurado con {len(ALLOWED_ORIGINS)} orígenes")
 
 # =====================================================
-# 🚀 OTROS MIDDLEWARES
+# 🚀 OTROS MIDDLEWARES - ¡NO SE TOCAN!
 # =====================================================
 
 app.add_middleware(
@@ -110,7 +118,7 @@ app.add_middleware(
 )
 
 # =====================================================
-# 📊 MIDDLEWARE DE MONITOREO
+# 📊 MIDDLEWARE DE MONITOREO - ¡NO SE TOCA!
 # =====================================================
 
 @app.middleware("http")
@@ -122,7 +130,7 @@ async def monitor_performance(request: Request, call_next):
     return response
 
 # =====================================================
-# 📡 REGISTRO DE ROUTERS
+# 📡 REGISTRO DE ROUTERS - ¡NO SE TOCA!
 # =====================================================
 
 app.include_router(api_router, prefix=settings.API_V1_PREFIX)
@@ -130,15 +138,16 @@ app.include_router(api_router, prefix=settings.API_V1_PREFIX)
 modulos_existentes = [
     'auth', 'personal', 'planificacion', 'asistencia',
     'descansos_medicos', 'solicitudes_cambio', 'qr', 'configuracion_mensual'
+    # Nota: publicaciones se agrega automáticamente vía api_router
 ]
 
 # =====================================================
-# 🔍 ENDPOINTS DE DIAGNÓSTICO
+# 🔍 ENDPOINTS DE DIAGNÓSTICO - ¡NO SE TOCAN!
 # =====================================================
 
 @app.api_route(
     "/",
-    methods=["GET", "HEAD"],  # ✅ CRUCIAL: Soporte para HEAD
+    methods=["GET", "HEAD"],
     tags=["Sistema"],
     summary="Información del sistema"
 )
@@ -198,7 +207,7 @@ async def system_info():
     }
 
 # =====================================================
-# 🛡️ MANEJO DE ERRORES
+# 🛡️ MANEJO DE ERRORES - ¡NO SE TOCA!
 # =====================================================
 
 @app.exception_handler(404)
@@ -230,7 +239,7 @@ async def custom_500_handler(request: Request, exc):
     )
 
 # =====================================================
-# 🔥 EVENTOS DE CICLO DE VIDA
+# 🔥 EVENTOS DE CICLO DE VIDA - ¡NO SE TOCAN!
 # =====================================================
 
 @app.on_event("startup")
@@ -258,7 +267,7 @@ async def shutdown_event():
     logger.info("✅ Aplicación detenida correctamente")
 
 # =====================================================
-# 📊 INFORMACIÓN DE INICIALIZACIÓN
+# 📊 INFORMACIÓN DE INICIALIZACIÓN - ¡NO SE TOCA!
 # =====================================================
 
 if __name__ == "__main__":
