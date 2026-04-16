@@ -894,7 +894,7 @@ async def registro_manual(
 
 
 # =====================================================
-# ENDPOINT PARA OBTENER ASISTENCIA POR PERSONAL
+# ENDPOINT PARA OBTENER ASISTENCIA POR PERSONAL (CORREGIDO)
 # =====================================================
 
 @router.get("/personal/{personal_id}")
@@ -927,10 +927,20 @@ async def get_asistencia_personal(
         
         resultado = []
         for r in registros:
+            # 🔥 CORRECCIÓN: Asegurar zona horaria Perú (UTC-5)
+            timestamp_peru = r.timestamp
+            if timestamp_peru.tzinfo is None:
+                # Si no tiene zona horaria, asumimos que está en UTC y convertimos a Perú
+                timestamp_peru = pytz.UTC.localize(timestamp_peru).astimezone(PERU_TZ)
+            else:
+                # Si ya tiene zona horaria, convertir a Perú
+                timestamp_peru = timestamp_peru.astimezone(PERU_TZ)
+            
             resultado.append({
                 "id": str(r.id),
-                "fecha": r.timestamp.date().isoformat(),
-                "hora": r.timestamp.time().isoformat(),
+                "fecha": timestamp_peru.date().isoformat(),
+                "hora": timestamp_peru.time().isoformat(),
+                "timestamp": timestamp_peru.isoformat(),  # ← NUEVO: para consistencia con otros endpoints
                 "tipo": r.tipo,
                 "tipo_registro": r.tipo_registro,
                 "turno": r.turno_codigo
@@ -952,7 +962,6 @@ async def get_asistencia_personal(
     except Exception as e:
         logger.error(f"Error en get_asistencia_personal: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error al obtener historial: {str(e)}")
-
 
 # =====================================================
 # ENDPOINT PARA REPORTE DE ASISTENCIA POR FECHA
