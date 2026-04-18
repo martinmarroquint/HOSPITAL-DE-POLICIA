@@ -185,40 +185,47 @@ async def crear_publicacion(
     
     # 🆕 CREAR NOTIFICACIONES PARA TODOS LOS USUARIOS ACTIVOS
     try:
+        # Importar AQUÍ DENTRO para evitar importación circular
+        from app.models.notificacion import Notificacion
+        
         # Obtener todos los usuarios activos EXCEPTO el autor
         usuarios_activos = db.query(Usuario).filter(
-            Usuario.activo == True,
-            Usuario.id != current_user.id  # No notificar al autor
-        ).all()
+    Usuario.activo == True
+).all()
         
         if usuarios_activos:
-            usuarios_ids = [u.id for u in usuarios_activos]
-            
-            # Determinar el tipo de notificación según la categoría
+            # Determinar el tipo de notificación
             tipo_notificacion = "nueva_publicacion"
             if publicacion.categoria == "cumpleanios":
                 tipo_notificacion = "cumpleanios"
             
-            # Crear notificaciones masivas
-            cantidad = crear_notificacion_masiva(
-                db=db,
-                usuarios_ids=usuarios_ids,
-                tipo=tipo_notificacion,
-                titulo="📢 Nueva publicación" if tipo_notificacion == "nueva_publicacion" else "🎂 ¡Feliz Cumpleaños!",
-                mensaje=publicacion.titulo[:100],
-                publicacion_id=publicacion.id,
-                data={
-                    "publicacion_id": str(publicacion.id),
-                    "tipo": publicacion.tipo,
-                    "categoria": publicacion.categoria
-                }
-            )
+            # Crear notificaciones una por una (más seguro que bulk)
+            notificaciones_creadas = 0
+            for usuario in usuarios_activos:
+                try:
+                    nueva_notificacion = Notificacion(
+    usuario_id=usuario.id,
+    tipo=tipo_notificacion,
+    titulo="📢 Nueva publicación" if tipo_notificacion == "nueva_publicacion" else "🎂 ¡Feliz Cumpleaños!",
+    mensaje=publicacion.titulo[:100],
+    publicacion_id=publicacion.id
+)
+                    db.add(nueva_notificacion)
+                    notificaciones_creadas += 1
+                except Exception as e:
+                    logger.error(f"Error creando notificación para usuario {usuario.id}: {e}")
+                    continue
             
-            logger.info(f"🔔 {cantidad} notificaciones creadas para la publicación {publicacion.id}")
+            # Commit de todas las notificaciones
+            db.commit()
+            logger.info(f"🔔 {notificaciones_creadas} notificaciones creadas para la publicación {publicacion.id}")
+        else:
+            logger.info(f"ℹ️ No hay usuarios activos para notificar")
     
     except Exception as e:
-        # Si falla la creación de notificaciones, no debe impedir que se cree la publicación
+        # Si falla la creación de notificaciones, NO debe impedir que se cree la publicación
         logger.error(f"⚠️ Error creando notificaciones para publicación {publicacion.id}: {e}")
+        db.rollback()
     
     return enriquecer_publicacion(db, publicacion)
 
@@ -575,17 +582,13 @@ Que este nuevo año de vida esté lleno de éxitos, salud y momentos inolvidable
             
             # Crear notificaciones masivas
             cantidad = crear_notificacion_masiva(
-                db=db,
-                usuarios_ids=usuarios_ids,
-                tipo="cumpleanios",
-                titulo="🎂 ¡Feliz Cumpleaños!",
-                mensaje=f"Hoy celebramos a {len(cumpleanieros)} compañero(s)",
-                publicacion_id=publicacion.id,
-                data={
-                    "publicacion_id": str(publicacion.id),
-                    "cantidad": len(cumpleanieros)
-                }
-            )
+    db=db,
+    usuarios_ids=usuarios_ids,
+    tipo="cumpleanios",
+    titulo="🎂 ¡Feliz Cumpleaños!",
+    mensaje=f"Hoy celebramos a {len(cumpleanieros)} compañero(s)",
+    publicacion_id=publicacion.id
+)
             
             logger.info(f"🔔 {cantidad} notificaciones de cumpleaños creadas")
     
