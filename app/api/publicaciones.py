@@ -1,5 +1,5 @@
 # app/api/publicaciones.py
-# ROUTER PARA PUBLICACIONES - SIGUIENDO EL PATRÓN EXISTENTE
+# ROUTER PARA PUBLICACIONES - CON NOTIFICACIONES AUTOMÁTICAS
 
 from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy.orm import Session
@@ -19,6 +19,9 @@ from app.schemas.publicacion import (
     PublicacionVistaCreate, PublicacionVistaResponse, MarcarVistaRequest,
     PublicacionEstadisticas, EstadisticasGlobales, PublicacionListResponse
 )
+
+# 🆕 IMPORTAR FUNCIONES DE NOTIFICACIONES
+from app.api.notificaciones import crear_notificacion_masiva
 
 # Configurar logger
 logger = logging.getLogger(__name__)
@@ -148,6 +151,7 @@ async def crear_publicacion(
     """
     Crea una nueva publicación.
     Solo administradores pueden crear publicaciones.
+    🆕 También crea notificaciones para todos los usuarios activos.
     """
     # Validar según tipo
     if publicacion_data.tipo == 'TEXTO' and not publicacion_data.contenido_texto:
@@ -178,6 +182,43 @@ async def crear_publicacion(
     db.refresh(publicacion)
     
     logger.info(f"✅ Publicación creada: {publicacion.id} - {publicacion.titulo[:30]}...")
+    
+    # 🆕 CREAR NOTIFICACIONES PARA TODOS LOS USUARIOS ACTIVOS
+    try:
+        # Obtener todos los usuarios activos EXCEPTO el autor
+        usuarios_activos = db.query(Usuario).filter(
+            Usuario.activo == True,
+            Usuario.id != current_user.id  # No notificar al autor
+        ).all()
+        
+        if usuarios_activos:
+            usuarios_ids = [u.id for u in usuarios_activos]
+            
+            # Determinar el tipo de notificación según la categoría
+            tipo_notificacion = "nueva_publicacion"
+            if publicacion.categoria == "cumpleanios":
+                tipo_notificacion = "cumpleanios"
+            
+            # Crear notificaciones masivas
+            cantidad = crear_notificacion_masiva(
+                db=db,
+                usuarios_ids=usuarios_ids,
+                tipo=tipo_notificacion,
+                titulo="📢 Nueva publicación" if tipo_notificacion == "nueva_publicacion" else "🎂 ¡Feliz Cumpleaños!",
+                mensaje=publicacion.titulo[:100],
+                publicacion_id=publicacion.id,
+                data={
+                    "publicacion_id": str(publicacion.id),
+                    "tipo": publicacion.tipo,
+                    "categoria": publicacion.categoria
+                }
+            )
+            
+            logger.info(f"🔔 {cantidad} notificaciones creadas para la publicación {publicacion.id}")
+    
+    except Exception as e:
+        # Si falla la creación de notificaciones, no debe impedir que se cree la publicación
+        logger.error(f"⚠️ Error creando notificaciones para publicación {publicacion.id}: {e}")
     
     return enriquecer_publicacion(db, publicacion)
 
@@ -442,6 +483,7 @@ async def generar_publicacion_cumpleanios(
     """
     Genera automáticamente una publicación con los cumpleañeros del día.
     Solo administradores (o llamado por tarea programada).
+    🆕 También crea notificaciones para todos los usuarios activos.
     """
     from datetime import date
     
@@ -479,8 +521,6 @@ async def generar_publicacion_cumpleanios(
         return {"message": "No hay cumpleañeros hoy", "cantidad": 0}
     
     # Generar contenido
-    from app.utils.constants import AREAS_VALIDAS  # Si existe, si no usar lista básica
-    
     fecha_formateada = hoy.strftime("%d de %B").replace("January", "enero").replace("February", "febrero") \
         .replace("March", "marzo").replace("April", "abril").replace("May", "mayo") \
         .replace("June", "junio").replace("July", "julio").replace("August", "agosto") \
@@ -524,6 +564,34 @@ Que este nuevo año de vida esté lleno de éxitos, salud y momentos inolvidable
     db.refresh(publicacion)
     
     logger.info(f"🎂 Publicación automática de cumpleaños creada: {publicacion.id} - {len(cumpleanieros)} cumpleañeros")
+    
+    # 🆕 CREAR NOTIFICACIONES PARA TODOS LOS USUARIOS ACTIVOS
+    try:
+        # Obtener todos los usuarios activos
+        usuarios_activos = db.query(Usuario).filter(Usuario.activo == True).all()
+        
+        if usuarios_activos:
+            usuarios_ids = [u.id for u in usuarios_activos]
+            
+            # Crear notificaciones masivas
+            cantidad = crear_notificacion_masiva(
+                db=db,
+                usuarios_ids=usuarios_ids,
+                tipo="cumpleanios",
+                titulo="🎂 ¡Feliz Cumpleaños!",
+                mensaje=f"Hoy celebramos a {len(cumpleanieros)} compañero(s)",
+                publicacion_id=publicacion.id,
+                data={
+                    "publicacion_id": str(publicacion.id),
+                    "cantidad": len(cumpleanieros)
+                }
+            )
+            
+            logger.info(f"🔔 {cantidad} notificaciones de cumpleaños creadas")
+    
+    except Exception as e:
+        # Si falla la creación de notificaciones, no debe impedir que se cree la publicación
+        logger.error(f"⚠️ Error creando notificaciones de cumpleaños: {e}")
     
     return {
         "success": True,

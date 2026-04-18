@@ -1,5 +1,5 @@
 # app/main.py
-# VERSIÓN ESTABLE - SOLO SE AGREGA EL TAG DE PUBLICACIONES
+# VERSIÓN ESTABLE - CON TAGS DE PUBLICACIONES Y NOTIFICACIONES
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -61,10 +61,11 @@ app = FastAPI(
         {"name": "Solicitudes de Cambio", "description": "Solicitudes de cambio de turno"},
         {"name": "QR", "description": "Generación y validación de códigos QR"},
         {"name": "Configuración Mensual", "description": "Configuración de parámetros mensuales"},
-        # =====================================================
-        # 🆕 ÚNICO CAMBIO: AGREGAR TAG DE PUBLICACIONES
-        # =====================================================
         {"name": "Publicaciones", "description": "Canal interno de comunicaciones - Publicaciones y anuncios"},
+        # =====================================================
+        # 🆕 ÚNICO CAMBIO: AGREGAR TAG DE NOTIFICACIONES
+        # =====================================================
+        {"name": "Notificaciones", "description": "Centro de notificaciones y alertas del sistema"},
         # =====================================================
         {"name": "Sistema", "description": "Endpoints de sistema y monitoreo"}
     ]
@@ -138,7 +139,7 @@ app.include_router(api_router, prefix=settings.API_V1_PREFIX)
 modulos_existentes = [
     'auth', 'personal', 'planificacion', 'asistencia',
     'descansos_medicos', 'solicitudes_cambio', 'qr', 'configuracion_mensual'
-    # Nota: publicaciones se agrega automáticamente vía api_router
+    # Nota: publicaciones y notificaciones se agregan automáticamente vía api_router
 ]
 
 # =====================================================

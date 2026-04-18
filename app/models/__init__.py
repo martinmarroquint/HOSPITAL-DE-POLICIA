@@ -1,5 +1,5 @@
 # app/models/__init__.py
-# VERSIÓN ACTUALIZADA - CON MODELOS DE PUBLICACIONES
+# VERSIÓN ACTUALIZADA - CON MODELOS DE PUBLICACIONES Y NOTIFICACIONES
 
 from app.models.usuario import Usuario
 from app.models.personal import Personal
@@ -14,6 +14,7 @@ from app.models.jerarquia import Jerarquia, NivelJerarquico, TipoArea
 from app.models.qr import QRRegistro
 from app.models.configuracion_mensual import ConfiguracionMensual
 from app.models.publicacion import Publicacion, PublicacionVista
+from app.models.notificacion import Notificacion
 
 __all__ = [
     "Usuario",
@@ -34,5 +35,6 @@ __all__ = [
     "QRRegistro",
     "ConfiguracionMensual",
     "Publicacion",
-    "PublicacionVista"
+    "PublicacionVista",
+    "Notificacion"
 ]

@@ -1,8 +1,8 @@
 # app/api/__init__.py
-# VERSIÓN ACTUALIZADA - CON ROUTER DE PUBLICACIONES
+# VERSIÓN ACTUALIZADA - CON ROUTER DE PUBLICACIONES Y NOTIFICACIONES
 
 from fastapi import APIRouter
-from app.api import auth, personal, planificacion, asistencia, descansos_medicos, solicitudes_cambio, qr, configuracion_mensual, publicaciones
+from app.api import auth, personal, planificacion, asistencia, descansos_medicos, solicitudes_cambio, qr, configuracion_mensual, publicaciones, notificaciones
 
 api_router = APIRouter()
 
@@ -14,6 +14,7 @@ api_router.include_router(descansos_medicos.router, prefix="/dm", tags=["Descans
 api_router.include_router(solicitudes_cambio.router, prefix="/solicitudes", tags=["Solicitudes de Cambio"])
 api_router.include_router(qr.router, prefix="/qr", tags=["QR"])
 api_router.include_router(publicaciones.router, prefix="/publicaciones", tags=["Publicaciones"])
+api_router.include_router(notificaciones.router, prefix="/notificaciones", tags=["Notificaciones"])
 # ⚠️ ELIMINADO: configuracion_mensual.router se incluye directamente en main.py
 
 __all__ = [
@@ -26,5 +27,6 @@ __all__ = [
     'qr',
     'configuracion_mensual',
     'publicaciones',
+    'notificaciones',
     'api_router'
 ]
