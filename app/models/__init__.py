@@ -1,5 +1,5 @@
 # app/models/__init__.py
-# VERSIÓN ACTUALIZADA - CON MODELOS DE PUBLICACIONES Y NOTIFICACIONES
+# VERSIÓN ACTUALIZADA - CON MODELO DE EMPRESA Y CONFIGURACIÓN DINÁMICA
 
 from app.models.usuario import Usuario
 from app.models.personal import Personal
@@ -16,25 +16,82 @@ from app.models.configuracion_mensual import ConfiguracionMensual
 from app.models.publicacion import Publicacion, PublicacionVista
 from app.models.notificacion import Notificacion
 
+# 🆕 MODELO DE EMPRESA (MULTI-TENANCY)
+from app.models.empresa import Empresa
+
+# 🆕 MODELOS DE CONFIGURACIÓN DINÁMICA
+from app.models.configuracion import (
+    ConfigTurno,
+    ConfigRegla,
+    ConfigNivelJerarquico,
+    ConfigUnidad,
+    ConfigRol,
+    ConfigCampoPersonal,
+    ConfigCatalogo,
+    ConfigCliente,
+    TipoTurno,
+    UnidadMedida,
+    Periodicidad,
+    TipoMeta,
+    MetodoRedondeo,
+    AlcanceRegla,
+    TipoCampo,
+)
+
 __all__ = [
+    # MULTI-TENANCY
+    "Empresa",
+    
+    # USUARIOS Y PERSONAL
     "Usuario",
     "Personal",
+    
+    # PLANIFICACIÓN
     "Planificacion",
     "PlanificacionBorrador",
+    "ConfiguracionMensual",
+    
+    # ASISTENCIA
     "Asistencia",
+    "QRRegistro",
+    
+    # SALUD
     "DescansoMedico",
+    
+    # SOLICITUDES
     "SolicitudCambio",
     "Solicitud",
     "TipoSolicitud",
     "EstadoSolicitud",
+    
+    # TRAZABILIDAD
     "Trazabilidad",
     "AccionTrazabilidad",
+    
+    # JERARQUÍA
     "Jerarquia",
     "NivelJerarquico",
     "TipoArea",
-    "QRRegistro",
-    "ConfiguracionMensual",
+    
+    # COMUNICACIONES
     "Publicacion",
     "PublicacionVista",
-    "Notificacion"
+    "Notificacion",
+    
+    # CONFIGURACIÓN DINÁMICA
+    "ConfigTurno",
+    "ConfigRegla",
+    "ConfigNivelJerarquico",
+    "ConfigUnidad",
+    "ConfigRol",
+    "ConfigCampoPersonal",
+    "ConfigCatalogo",
+    "ConfigCliente",
+    "TipoTurno",
+    "UnidadMedida",
+    "Periodicidad",
+    "TipoMeta",
+    "MetodoRedondeo",
+    "AlcanceRegla",
+    "TipoCampo",
 ]

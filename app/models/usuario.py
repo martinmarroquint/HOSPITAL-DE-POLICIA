@@ -8,14 +8,17 @@ class Usuario(Base):
     __tablename__ = "usuarios"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    personal_id = Column(UUID(as_uuid=True), ForeignKey("personal.id"), nullable=False)  # ← ¡ASÍ DEBE SER!
+    personal_id = Column(UUID(as_uuid=True), ForeignKey("personal.id"), nullable=True)
+    empresa_id = Column(UUID(as_uuid=True), ForeignKey("empresas.id"), nullable=True)
     email = Column(String, unique=True, nullable=False, index=True)
+    username = Column(String, unique=True, nullable=True)
     password_hash = Column(String, nullable=False)
     roles = Column(JSON, default=["usuario"])
+    rol_global = Column(String(20), default="usuario")
     activo = Column(Boolean, default=True)
     ultimo_acceso = Column(DateTime(timezone=True))
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 
     def __repr__(self):
-        return f"<Usuario {self.email}>"
+        return f"<Usuario {self.email} - {self.rol_global}>"

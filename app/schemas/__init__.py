@@ -1,5 +1,5 @@
 # app/schemas/__init__.py
-# VERSIÓN ACTUALIZADA - CON SCHEMAS DE PUBLICACIONES Y NOTIFICACIONES
+# VERSIÓN ACTUALIZADA - CON SCHEMAS DE EMPRESAS, PUBLICACIONES Y NOTIFICACIONES
 
 from app.schemas.auth import *
 from app.schemas.personal import *
@@ -9,17 +9,49 @@ from app.schemas.descanso_medico import *
 from app.schemas.solicitud_cambio import *
 from app.schemas.publicacion import *
 from app.schemas.notificacion import *
+from app.schemas.empresa import *  # 🆕
 
 __all__ = [
+    # AUTH
     "Token", "TokenData", "LoginRequest", "UserProfile", "PasswordChange",
+    "UsuarioCreate", "UsuarioUpdate", "UsuarioResetPassword",
+    
+    # PERSONAL
     "PersonalBase", "PersonalCreate", "PersonalUpdate", "PersonalResponse",
-    "Turno", "PlanificacionBase", "PlanificacionCreate", "PlanificacionResponse", "PlanificacionMasiva",
-    "AsistenciaBase", "AsistenciaCreate", "AsistenciaResponse", "AsistenciaQR", "JustificacionCreate",
-    "DescansoMedicoBase", "DescansoMedicoCreate", "DescansoMedicoResponse", "DescansoMedicoUpdate",
-    "SolicitudCambioBase", "SolicitudCambioCreate", "SolicitudCambioResponse", "SolicitudCambioUpdate",
-    "PublicacionBase", "PublicacionCreate", "PublicacionUpdate", "PublicacionResponse",
-    "PublicacionVistaCreate", "PublicacionVistaResponse", "PublicacionEstadisticas", "EstadisticasGlobales",
+    "CargaMasivaItem", "CargaMasivaResponse",
+    "VerificarRelacionesResponse", "VerificarDNIResponse",
+    "EliminarResponse", "JefaturaResumen",
+    
+    # PLANIFICACIÓN
+    "Turno", "PlanificacionBase", "PlanificacionCreate", 
+    "PlanificacionResponse", "PlanificacionMasiva",
+    "ObservacionCreate", "EstadoPlanificacion",
+    
+    # ASISTENCIA
+    "AsistenciaBase", "AsistenciaCreate", "AsistenciaResponse", 
+    "AsistenciaQR", "JustificacionCreate",
+    "EstadisticasAsistencia", "IncidenciaAsistencia",
+    
+    # DESCANSOS MÉDICOS
+    "DescansoMedicoBase", "DescansoMedicoCreate", 
+    "DescansoMedicoResponse", "DescansoMedicoUpdate",
+    
+    # SOLICITUDES DE CAMBIO
+    "SolicitudCambioBase", "SolicitudCambioCreate", 
+    "SolicitudCambioResponse", "SolicitudCambioUpdate",
+    
+    # PUBLICACIONES
+    "PublicacionBase", "PublicacionCreate", "PublicacionUpdate", 
+    "PublicacionResponse",
+    "PublicacionVistaCreate", "PublicacionVistaResponse", 
+    "PublicacionEstadisticas", "EstadisticasGlobales",
+    
+    # NOTIFICACIONES
     "NotificacionBase", "NotificacionCreate", "NotificacionResponse",
-    "NotificacionesCountResponse", "MarcarLeidaResponse", "MarcarTodasLeidasResponse",
-    "PreferenciasNotificacionesBase", "PreferenciasNotificacionesResponse"
+    "NotificacionesCountResponse", "MarcarLeidaResponse", 
+    "MarcarTodasLeidasResponse",
+    "PreferenciasNotificacionesBase", "PreferenciasNotificacionesResponse",
+    
+    # 🆕 EMPRESAS
+    "EmpresaCreate", "EmpresaUpdate", "EmpresaResponse", "EmpresaStatsResponse",
 ]

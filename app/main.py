@@ -1,10 +1,12 @@
 # app/main.py
-# VERSIÓN ESTABLE - CON TAGS DE PUBLICACIONES Y NOTIFICACIONES
+# VERSIÓN ESTABLE - CON MIDDLEWARE MULTI-EMPRESA
+# Incluye tags de publicaciones, notificaciones, configuración y empresas
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 import logging
 import time
 from datetime import datetime
@@ -19,6 +21,9 @@ from app.database import (
     check_db_connection
 )
 from app.api import api_router
+
+# 🆕 MIDDLEWARE MULTI-EMPRESA
+from app.core.middleware_empresa import EmpresaContextMiddleware
 
 # =====================================================
 # 📦 CONFIGURACIÓN DE LOGGING
@@ -62,17 +67,20 @@ app = FastAPI(
         {"name": "QR", "description": "Generación y validación de códigos QR"},
         {"name": "Configuración Mensual", "description": "Configuración de parámetros mensuales"},
         {"name": "Publicaciones", "description": "Canal interno de comunicaciones - Publicaciones y anuncios"},
-        # =====================================================
-        # 🆕 ÚNICO CAMBIO: AGREGAR TAG DE NOTIFICACIONES
-        # =====================================================
         {"name": "Notificaciones", "description": "Centro de notificaciones y alertas del sistema"},
-        # =====================================================
+        {"name": "Configuración", "description": "Configuración dinámica del sistema - Turnos, Reglas, Organigrama, Roles, Campos, Catálogos"},
+        {"name": "Empresas", "description": "Panel Super Admin - Gestión de empresas y suscripciones"},
         {"name": "Sistema", "description": "Endpoints de sistema y monitoreo"}
     ]
 )
 
 # =====================================================
-# 🚀 CONFIGURACIÓN CORS - ¡NO SE TOCA! ESTABLE
+# 🆕 SERVIR ARCHIVOS ESTÁTICOS (LOGOS)
+# =====================================================
+app.mount("/static", StaticFiles(directory="static"), name="static")
+
+# =====================================================
+# 🌐 CONFIGURACIÓN CORS - ESTABLE
 # =====================================================
 
 ALLOWED_ORIGINS = [
@@ -101,7 +109,7 @@ app.add_middleware(
     allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH", "HEAD"],
-    allow_headers=["Content-Type", "Authorization", "X-Requested-With", "Accept"],
+    allow_headers=["Content-Type", "Authorization", "X-Requested-With", "Accept", "X-Empresa-ID"],
     expose_headers=["X-Process-Time"],
     max_age=86400,
 )
@@ -109,7 +117,7 @@ app.add_middleware(
 logger.info(f"✅ CORS configurado con {len(ALLOWED_ORIGINS)} orígenes")
 
 # =====================================================
-# 🚀 OTROS MIDDLEWARES - ¡NO SE TOCAN!
+# 🚀 OTROS MIDDLEWARES
 # =====================================================
 
 app.add_middleware(
@@ -118,8 +126,12 @@ app.add_middleware(
     compresslevel=6
 )
 
+# 🆕 MIDDLEWARE MULTI-EMPRESA
+app.add_middleware(EmpresaContextMiddleware)
+logger.info("✅ Middleware multi-empresa registrado")
+
 # =====================================================
-# 📊 MIDDLEWARE DE MONITOREO - ¡NO SE TOCA!
+# 📊 MIDDLEWARE DE MONITOREO
 # =====================================================
 
 @app.middleware("http")
@@ -131,27 +143,22 @@ async def monitor_performance(request: Request, call_next):
     return response
 
 # =====================================================
-# 📡 REGISTRO DE ROUTERS - ¡NO SE TOCA!
+# 📡 REGISTRO DE ROUTERS
 # =====================================================
 
 app.include_router(api_router, prefix=settings.API_V1_PREFIX)
 
 modulos_existentes = [
     'auth', 'personal', 'planificacion', 'asistencia',
-    'descansos_medicos', 'solicitudes_cambio', 'qr', 'configuracion_mensual'
-    # Nota: publicaciones y notificaciones se agregan automáticamente vía api_router
+    'descansos_medicos', 'solicitudes_cambio', 'qr', 'configuracion_mensual',
+    'publicaciones', 'notificaciones', 'configuracion', 'empresas'
 ]
 
 # =====================================================
-# 🔍 ENDPOINTS DE DIAGNÓSTICO - ¡NO SE TOCAN!
+# 🔍 ENDPOINTS DE DIAGNÓSTICO
 # =====================================================
 
-@app.api_route(
-    "/",
-    methods=["GET", "HEAD"],
-    tags=["Sistema"],
-    summary="Información del sistema"
-)
+@app.api_route("/", methods=["GET", "HEAD"], tags=["Sistema"], summary="Información del sistema")
 async def root():
     return {
         "message": settings.PROJECT_NAME,
@@ -161,28 +168,17 @@ async def root():
         "timestamp": datetime.utcnow().isoformat()
     }
 
-@app.get(
-    "/health",
-    tags=["Sistema"],
-    summary="Health check"
-)
+@app.get("/health", tags=["Sistema"], summary="Health check")
 async def health_check():
     db_connected, db_message = check_db_connection()
-    
     return {
         "status": "healthy" if db_connected else "degraded",
         "timestamp": datetime.utcnow().isoformat(),
         "version": settings.VERSION,
         "environment": settings.ENVIRONMENT,
         "components": {
-            "database": {
-                "status": "up" if db_connected else "down",
-                "message": db_message
-            },
-            "api": {
-                "status": "up",
-                "modulos_cargados": len(modulos_existentes)
-            }
+            "database": {"status": "up" if db_connected else "down", "message": db_message},
+            "api": {"status": "up", "modulos_cargados": len(modulos_existentes)}
         }
     }
 
@@ -207,41 +203,27 @@ async def system_info():
         "timestamp": datetime.utcnow().isoformat()
     }
 
-# =====================================================
-# 🛡️ MANEJO DE ERRORES - ¡NO SE TOCA!
-# =====================================================
-
 @app.exception_handler(404)
 async def custom_404_handler(request: Request, exc):
-    return JSONResponse(
-        status_code=404,
-        content={
-            "error": "Not Found",
-            "message": "El endpoint solicitado no existe",
-            "url": str(request.url),
-            "method": request.method,
-            "timestamp": datetime.utcnow().isoformat()
-        }
-    )
+    return JSONResponse(status_code=404, content={
+        "error": "Not Found",
+        "message": "El endpoint solicitado no existe",
+        "url": str(request.url),
+        "method": request.method,
+        "timestamp": datetime.utcnow().isoformat()
+    })
 
 @app.exception_handler(500)
 async def custom_500_handler(request: Request, exc):
     error_id = datetime.utcnow().strftime("%Y%m%d%H%M%S%f")
     logger.error(f"❌ Error 500 [{error_id}] en {request.method} {request.url.path}: {str(exc)}")
-    
-    return JSONResponse(
-        status_code=500,
-        content={
-            "error": "Internal Server Error",
-            "message": str(exc) if settings.DEBUG else "Error interno del servidor",
-            "error_id": error_id,
-            "timestamp": datetime.utcnow().isoformat()
-        }
-    )
-
-# =====================================================
-# 🔥 EVENTOS DE CICLO DE VIDA - ¡NO SE TOCAN!
-# =====================================================
+    logger.error(f"   Traceback: {traceback.format_exc()}")
+    return JSONResponse(status_code=500, content={
+        "error": "Internal Server Error",
+        "message": str(exc) if settings.DEBUG else "Error interno del servidor",
+        "error_id": error_id,
+        "timestamp": datetime.utcnow().isoformat()
+    })
 
 @app.on_event("startup")
 async def startup_event():
@@ -249,16 +231,14 @@ async def startup_event():
     logger.info(f"🚀 INICIANDO {settings.PROJECT_NAME} v{settings.VERSION}")
     logger.info(f"🔧 Modo: {settings.ENVIRONMENT.upper()}")
     logger.info(f"🌐 CORS orígenes: {len(ALLOWED_ORIGINS)}")
+    logger.info(f"🏢 Middleware multi-empresa: ACTIVO")
     logger.info("=" * 60)
-    
     await startup_db_events()
-    
     db_connected, _ = check_db_connection()
     if db_connected:
         logger.info("✅ Sistema listo para recibir peticiones")
     else:
         logger.warning("⚠️ Sistema iniciado SIN conexión a base de datos")
-    
     logger.info("=" * 60)
 
 @app.on_event("shutdown")
@@ -267,19 +247,10 @@ async def shutdown_event():
     await shutdown_db_events()
     logger.info("✅ Aplicación detenida correctamente")
 
-# =====================================================
-# 📊 INFORMACIÓN DE INICIALIZACIÓN - ¡NO SE TOCA!
-# =====================================================
-
 if __name__ == "__main__":
     import uvicorn
-    
     port = int(os.environ.get("PORT", 8000))
-    
     uvicorn.run(
-        "app.main:app",
-        host="0.0.0.0",
-        port=port,
-        reload=settings.DEBUG,
-        log_level="info" if not settings.DEBUG else "debug"
+        "app.main:app", host="0.0.0.0", port=port,
+        reload=settings.DEBUG, log_level="info" if not settings.DEBUG else "debug"
     )

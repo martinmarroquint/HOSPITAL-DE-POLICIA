@@ -1,8 +1,8 @@
 # models/personal.py
-# VERSIÓN COMPLETA - CON SOPORTE PARA MÚLTIPLES TIPOS DE JEFATURA
+# VERSIÓN COMPLETA - CON SOPORTE MULTI-EMPRESA Y MÚLTIPLES TIPOS DE JEFATURA
 # Compatible con formato legacy (array) y nuevo (objeto)
 
-from sqlalchemy import Column, String, DateTime, Boolean, JSON, Date, Text
+from sqlalchemy import Column, String, DateTime, Boolean, JSON, Date, Text, ForeignKey
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.sql import func
 import uuid
@@ -15,6 +15,7 @@ class Personal(Base):
     # CAMPOS DE IDENTIFICACIÓN
     # =====================================================
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    empresa_id = Column(UUID(as_uuid=True), ForeignKey("empresas.id"), nullable=True, index=True)
     dni = Column(String(8), unique=True, nullable=False, index=True)
     cip = Column(String(20), unique=True, nullable=False)
     

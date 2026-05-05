@@ -13,7 +13,9 @@ class Turno(BaseModel):
 class PlanificacionBase(BaseModel):
     personal_id: UUID
     fecha: date
-    turno_codigo: str
+    turno_codigo: Optional[str] = None
+    hora_inicio: Optional[str] = None      # 🆕 Hora de inicio (formato HH:MM)
+    hora_fin: Optional[str] = None         # 🆕 Hora de fin (formato HH:MM)
     observacion: Optional[str] = None
     dm_info: Optional[Dict[str, Any]] = None
 

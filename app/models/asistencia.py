@@ -1,3 +1,4 @@
+# models/asistencia.py
 from sqlalchemy import Column, String, DateTime, Boolean, ForeignKey, Text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.sql import func
@@ -9,6 +10,7 @@ class Asistencia(Base):
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     personal_id = Column(UUID(as_uuid=True), ForeignKey("personal.id"), nullable=False)
+    empresa_id = Column(UUID(as_uuid=True), ForeignKey("empresas.id"), nullable=True)
     timestamp = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
     tipo = Column(String(20), nullable=False)  # ENTRADA, SALIDA, PAUSA
     tipo_registro = Column(String(10), nullable=False)  # QR, MANUAL
