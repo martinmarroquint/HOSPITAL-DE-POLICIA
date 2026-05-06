@@ -1,5 +1,5 @@
 # app/models/publicacion.py
-# MODELO DE PUBLICACIONES - SIGUIENDO EL PATRÓN EXISTENTE
+# MODELO DE PUBLICACIONES - CON EMPRESA_ID
 
 from sqlalchemy import Column, String, DateTime, Boolean, JSON, Text, ForeignKey, Integer
 from sqlalchemy.dialects.postgresql import UUID
@@ -36,6 +36,9 @@ class Publicacion(Base):
     # RELACIONES
     # =====================================================
     autor_id = Column(UUID(as_uuid=True), ForeignKey("usuarios.id"), nullable=True)
+    
+    # 🆕 CAMPO EMPRESA_ID - Para filtrar publicaciones por empresa
+    empresa_id = Column(UUID(as_uuid=True), ForeignKey("empresas.id"), nullable=True, index=True)
     
     # =====================================================
     # CONTROL DE PUBLICACIÓN

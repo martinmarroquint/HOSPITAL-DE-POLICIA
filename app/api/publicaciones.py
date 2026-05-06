@@ -1,12 +1,12 @@
 # app/api/publicaciones.py
-# ROUTER PARA PUBLICACIONES - CON NOTIFICACIONES AUTOMÁTICAS
+# ROUTER PARA PUBLICACIONES - CON FILTRO POR EMPRESA Y NOTIFICACIONES
 
 from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy.orm import Session
 from sqlalchemy import and_, or_, desc
 from typing import List, Optional
 from uuid import UUID
-from datetime import datetime
+from datetime import datetime, date
 import logging
 
 from app.database import get_db
@@ -34,7 +34,7 @@ router = APIRouter()
 # =====================================================
 
 def enriquecer_publicacion(db: Session, publicacion: Publicacion) -> dict:
-    """Enriquece una publicación con datos del autor y vistas"""
+    """Enriquece una publicación con datos del autor, vistas y empresa"""
     result = {
         "id": publicacion.id,
         "titulo": publicacion.titulo,
@@ -45,6 +45,7 @@ def enriquecer_publicacion(db: Session, publicacion: Publicacion) -> dict:
         "categoria": publicacion.categoria,
         "es_automatica": publicacion.es_automatica,
         "autor_id": publicacion.autor_id,
+        "empresa_id": publicacion.empresa_id,  # 🆕 Incluir empresa_id
         "fecha_publicacion": publicacion.fecha_publicacion,
         "fecha_expiracion": publicacion.fecha_expiracion,
         "activo": publicacion.activo,
@@ -63,7 +64,6 @@ def enriquecer_publicacion(db: Session, publicacion: Publicacion) -> dict:
             if personal:
                 result["autor_nombre"] = personal.nombre
                 result["autor_area"] = personal.area
-                # Generar iniciales
                 partes = personal.nombre.split()
                 result["autor_iniciales"] = ''.join([p[0] for p in partes[:2]]).upper()
     
@@ -71,13 +71,21 @@ def enriquecer_publicacion(db: Session, publicacion: Publicacion) -> dict:
 
 
 def verificar_acceso_publicacion(current_user: Usuario, publicacion: Publicacion, db: Session) -> bool:
-    """Verifica si el usuario actual tiene acceso a la publicación"""
+    """
+    Verifica si el usuario actual tiene acceso a la publicación.
+    🆕 También verifica por empresa_id.
+    """
     # Admin y roles con acceso global pueden ver todo
     roles_globales = ['admin', 'recursos_humanos', 'oficina_central', 'oficial_permanencia']
     if any(rol in current_user.roles for rol in roles_globales):
         return True
     
-    # Todos los usuarios autenticados pueden ver publicaciones activas
+    # 🆕 Verificar por empresa: usuarios solo ven publicaciones de su empresa o globales
+    if current_user.empresa_id and publicacion.empresa_id:
+        if str(current_user.empresa_id) != str(publicacion.empresa_id):
+            return False
+    
+    # Todos los usuarios autenticados pueden ver publicaciones activas de su empresa
     return publicacion.activo
 
 
@@ -90,6 +98,7 @@ async def listar_publicaciones(
     activo: Optional[bool] = Query(True),
     tipo: Optional[str] = Query(None),
     categoria: Optional[str] = Query(None),
+    empresa_id: Optional[UUID] = Query(None),  # 🆕 Parámetro empresa_id
     limit: int = Query(100, ge=1, le=500),
     offset: int = Query(0, ge=0),
     db: Session = Depends(get_db),
@@ -97,6 +106,7 @@ async def listar_publicaciones(
 ):
     """
     Lista todas las publicaciones con filtros opcionales.
+    🆕 Soporta filtro por empresa_id.
     Ordenadas por fecha de publicación (más recientes primero).
     """
     query = db.query(Publicacion)
@@ -109,6 +119,24 @@ async def listar_publicaciones(
     if categoria:
         query = query.filter(Publicacion.categoria == categoria)
     
+    # 🆕 FILTRO POR EMPRESA
+    if empresa_id:
+        # Mostrar publicaciones de la empresa Y publicaciones globales (sin empresa_id)
+        query = query.filter(
+            or_(
+                Publicacion.empresa_id == empresa_id,
+                Publicacion.empresa_id == None
+            )
+        )
+    elif current_user.empresa_id and current_user.rol_global != "super_admin":
+        # Si no se especifica empresa pero el usuario tiene una, filtrar automáticamente
+        query = query.filter(
+            or_(
+                Publicacion.empresa_id == current_user.empresa_id,
+                Publicacion.empresa_id == None
+            )
+        )
+    
     # Ordenar por fijado primero, luego fecha de publicación
     query = query.order_by(desc(Publicacion.fijado), desc(Publicacion.fecha_publicacion))
     
@@ -120,7 +148,7 @@ async def listar_publicaciones(
         if verificar_acceso_publicacion(current_user, pub, db):
             resultado.append(enriquecer_publicacion(db, pub))
     
-    logger.info(f"📋 {len(resultado)} publicaciones listadas para usuario {current_user.id}")
+    logger.info(f"📋 {len(resultado)} publicaciones listadas para usuario {current_user.id} | empresa: {empresa_id or current_user.empresa_id}")
     return resultado
 
 
@@ -151,7 +179,8 @@ async def crear_publicacion(
     """
     Crea una nueva publicación.
     Solo administradores pueden crear publicaciones.
-    🆕 También crea notificaciones para todos los usuarios activos.
+    🆕 Asigna empresa_id del usuario actual.
+    🆕 También crea notificaciones para usuarios de la misma empresa.
     """
     # Validar según tipo
     if publicacion_data.tipo == 'TEXTO' and not publicacion_data.contenido_texto:
@@ -159,6 +188,9 @@ async def crear_publicacion(
     
     if publicacion_data.tipo in ['IMAGEN', 'PDF'] and not publicacion_data.url_archivo:
         raise HTTPException(status_code=400, detail=f"url_archivo es requerido para tipo {publicacion_data.tipo}")
+    
+    # 🆕 Usar empresa_id del usuario si no se especifica
+    empresa_id = publicacion_data.empresa_id or current_user.empresa_id
     
     # Crear publicación
     publicacion = Publicacion(
@@ -170,6 +202,7 @@ async def crear_publicacion(
         categoria=publicacion_data.categoria or "general",
         es_automatica=publicacion_data.es_automatica or False,
         autor_id=current_user.id,
+        empresa_id=empresa_id,  # 🆕 Asignar empresa
         fecha_publicacion=publicacion_data.fecha_publicacion or datetime.now(),
         fecha_expiracion=publicacion_data.fecha_expiracion,
         fijado=publicacion_data.fijado or False,
@@ -181,49 +214,50 @@ async def crear_publicacion(
     db.commit()
     db.refresh(publicacion)
     
-    logger.info(f"✅ Publicación creada: {publicacion.id} - {publicacion.titulo[:30]}...")
+    logger.info(f"✅ Publicación creada: {publicacion.id} - {publicacion.titulo[:30]}... | empresa: {empresa_id}")
     
-    # 🆕 CREAR NOTIFICACIONES PARA TODOS LOS USUARIOS ACTIVOS
+    # 🆕 CREAR NOTIFICACIONES PARA USUARIOS DE LA MISMA EMPRESA
     try:
-        # Importar AQUÍ DENTRO para evitar importación circular
         from app.models.notificacion import Notificacion
         
-        # Obtener todos los usuarios activos EXCEPTO el autor
-        usuarios_activos = db.query(Usuario).filter(
-    Usuario.activo == True
-).all()
+        # 🆕 Filtrar usuarios por empresa
+        query_usuarios = db.query(Usuario).filter(Usuario.activo == True)
+        if empresa_id:
+            query_usuarios = query_usuarios.filter(
+                or_(
+                    Usuario.empresa_id == empresa_id,
+                    Usuario.empresa_id == None
+                )
+            )
+        usuarios_activos = query_usuarios.all()
         
         if usuarios_activos:
-            # Determinar el tipo de notificación
             tipo_notificacion = "nueva_publicacion"
             if publicacion.categoria == "cumpleanios":
                 tipo_notificacion = "cumpleanios"
             
-            # Crear notificaciones una por una (más seguro que bulk)
             notificaciones_creadas = 0
             for usuario in usuarios_activos:
                 try:
                     nueva_notificacion = Notificacion(
-    usuario_id=usuario.id,
-    tipo=tipo_notificacion,
-    titulo="📢 Nueva publicación" if tipo_notificacion == "nueva_publicacion" else "🎂 ¡Feliz Cumpleaños!",
-    mensaje=publicacion.titulo[:100],
-    publicacion_id=publicacion.id
-)
+                        usuario_id=usuario.id,
+                        tipo=tipo_notificacion,
+                        titulo="📢 Nueva publicación" if tipo_notificacion == "nueva_publicacion" else "🎂 ¡Feliz Cumpleaños!",
+                        mensaje=publicacion.titulo[:100],
+                        publicacion_id=publicacion.id
+                    )
                     db.add(nueva_notificacion)
                     notificaciones_creadas += 1
                 except Exception as e:
                     logger.error(f"Error creando notificación para usuario {usuario.id}: {e}")
                     continue
             
-            # Commit de todas las notificaciones
             db.commit()
             logger.info(f"🔔 {notificaciones_creadas} notificaciones creadas para la publicación {publicacion.id}")
         else:
             logger.info(f"ℹ️ No hay usuarios activos para notificar")
     
     except Exception as e:
-        # Si falla la creación de notificaciones, NO debe impedir que se cree la publicación
         logger.error(f"⚠️ Error creando notificaciones para publicación {publicacion.id}: {e}")
         db.rollback()
     
@@ -298,7 +332,6 @@ async def marcar_como_vista(
     """
     Marca una publicación como vista por un usuario.
     """
-    # Verificar que la publicación existe
     publicacion = db.query(Publicacion).filter(Publicacion.id == id).first()
     if not publicacion:
         raise HTTPException(status_code=404, detail="Publicación no encontrada")
@@ -306,12 +339,10 @@ async def marcar_como_vista(
     if not publicacion.activo:
         raise HTTPException(status_code=400, detail="La publicación no está activa")
     
-    # Verificar que el usuario existe
     usuario = db.query(Usuario).filter(Usuario.id == request.usuario_id).first()
     if not usuario:
         raise HTTPException(status_code=404, detail="Usuario no encontrado")
     
-    # Verificar si ya existe la vista
     vista_existente = db.query(PublicacionVista).filter(
         and_(
             PublicacionVista.publicacion_id == id,
@@ -322,17 +353,13 @@ async def marcar_como_vista(
     if vista_existente:
         return {"message": "Publicación ya marcada como vista", "ya_vista": True}
     
-    # Crear nueva vista
     nueva_vista = PublicacionVista(
         publicacion_id=id,
         usuario_id=request.usuario_id
     )
     
     db.add(nueva_vista)
-    
-    # Actualizar contador en la publicación
     publicacion.total_vistas = (publicacion.total_vistas or 0) + 1
-    
     db.commit()
     
     logger.info(f"👁️ Publicación {id} marcada como vista por usuario {request.usuario_id}")
@@ -350,10 +377,7 @@ async def obtener_vistas_publicacion(
     db: Session = Depends(get_db),
     current_user: Usuario = Depends(require_roles(["admin"]))
 ):
-    """
-    Obtiene la lista de usuarios que han visto una publicación.
-    Solo administradores.
-    """
+    """Obtiene la lista de usuarios que han visto una publicación."""
     publicacion = db.query(Publicacion).filter(Publicacion.id == id).first()
     if not publicacion:
         raise HTTPException(status_code=404, detail="Publicación no encontrada")
@@ -371,19 +395,23 @@ async def obtener_estadisticas_publicacion(
     db: Session = Depends(get_db),
     current_user: Usuario = Depends(require_roles(["admin"]))
 ):
-    """
-    Obtiene estadísticas detalladas de visualización de una publicación.
-    Solo administradores.
-    """
+    """Obtiene estadísticas detalladas de visualización de una publicación."""
     publicacion = db.query(Publicacion).filter(Publicacion.id == id).first()
     if not publicacion:
         raise HTTPException(status_code=404, detail="Publicación no encontrada")
     
-    # Obtener todos los empleados activos
-    empleados = db.query(Personal).filter(Personal.activo == True).all()
+    # 🆕 Filtrar empleados por empresa de la publicación
+    query_empleados = db.query(Personal).filter(Personal.activo == True)
+    if publicacion.empresa_id:
+        query_empleados = query_empleados.filter(
+            or_(
+                Personal.empresa_id == publicacion.empresa_id,
+                Personal.empresa_id == None
+            )
+        )
+    empleados = query_empleados.all()
     total_empleados = len(empleados)
     
-    # Obtener vistas
     vistas = db.query(PublicacionVista).filter(
         PublicacionVista.publicacion_id == id
     ).all()
@@ -392,7 +420,6 @@ async def obtener_estadisticas_publicacion(
     total_vistas = len(vistas)
     porcentaje = (total_vistas / total_empleados * 100) if total_empleados > 0 else 0
     
-    # Obtener detalles de usuarios que vieron
     usuarios_vieron = []
     for vista in vistas:
         usuario = db.query(Usuario).filter(Usuario.id == vista.usuario_id).first()
@@ -406,7 +433,6 @@ async def obtener_estadisticas_publicacion(
                     "fecha_vista": vista.fecha_vista.isoformat()
                 })
     
-    # Obtener usuarios que NO han visto
     usuarios_no_vieron = []
     for emp in empleados:
         usuario_auth = db.query(Usuario).filter(Usuario.personal_id == emp.id).first()
@@ -437,21 +463,33 @@ async def obtener_estadisticas_globales(
     db: Session = Depends(get_db),
     current_user: Usuario = Depends(require_roles(["admin", "jefe_area"]))
 ):
-    """
-    Obtiene estadísticas globales de todas las publicaciones.
-    """
-    # Total de publicaciones activas
-    total_publicaciones = db.query(Publicacion).filter(Publicacion.activo == True).count()
+    """Obtiene estadísticas globales de todas las publicaciones."""
+    # 🆕 Filtrar por empresa del usuario
+    query_publicaciones = db.query(Publicacion).filter(Publicacion.activo == True)
+    if current_user.empresa_id and current_user.rol_global != "super_admin":
+        query_publicaciones = query_publicaciones.filter(
+            or_(
+                Publicacion.empresa_id == current_user.empresa_id,
+                Publicacion.empresa_id == None
+            )
+        )
+    total_publicaciones = query_publicaciones.count()
     
-    # Total de empleados activos
-    empleados = db.query(Personal).filter(Personal.activo == True).all()
+    # 🆕 Filtrar empleados por empresa
+    query_empleados = db.query(Personal).filter(Personal.activo == True)
+    if current_user.empresa_id:
+        query_empleados = query_empleados.filter(
+            or_(
+                Personal.empresa_id == current_user.empresa_id,
+                Personal.empresa_id == None
+            )
+        )
+    empleados = query_empleados.all()
     total_empleados = len(empleados)
     
-    # Total de vistas
     total_vistas = db.query(PublicacionVista).count()
     
-    # Usuarios que vieron todas las publicaciones
-    publicaciones_activas = db.query(Publicacion).filter(Publicacion.activo == True).all()
+    publicaciones_activas = query_publicaciones.all()
     publicaciones_ids = [p.id for p in publicaciones_activas]
     
     usuarios_vieron_todo = 0
@@ -484,30 +522,41 @@ async def obtener_estadisticas_globales(
 
 @router.post("/cumpleanios/auto", status_code=201)
 async def generar_publicacion_cumpleanios(
+    empresa_id: Optional[UUID] = Query(None),  # 🆕 Parámetro opcional de empresa
     db: Session = Depends(get_db),
     current_user: Usuario = Depends(require_roles(["admin"]))
 ):
     """
     Genera automáticamente una publicación con los cumpleañeros del día.
-    Solo administradores (o llamado por tarea programada).
-    🆕 También crea notificaciones para todos los usuarios activos.
+    🆕 Soporta filtro por empresa_id.
     """
-    from datetime import date
-    
     hoy = date.today()
+    
+    # 🆕 Usar empresa_id del parámetro o del usuario actual
+    emp_id = empresa_id or current_user.empresa_id
     
     # Verificar si ya existe una publicación de cumpleaños para hoy
     fecha_inicio = datetime(hoy.year, hoy.month, hoy.day, 0, 0, 0)
     fecha_fin = datetime(hoy.year, hoy.month, hoy.day, 23, 59, 59)
     
-    existente = db.query(Publicacion).filter(
+    query_existente = db.query(Publicacion).filter(
         and_(
             Publicacion.categoria == "cumpleanios",
             Publicacion.es_automatica == True,
             Publicacion.fecha_publicacion >= fecha_inicio,
             Publicacion.fecha_publicacion <= fecha_fin
         )
-    ).first()
+    )
+    # 🆕 Filtrar por empresa también
+    if emp_id:
+        query_existente = query_existente.filter(
+            or_(
+                Publicacion.empresa_id == emp_id,
+                Publicacion.empresa_id == None
+            )
+        )
+    
+    existente = query_existente.first()
     
     if existente:
         return {
@@ -515,10 +564,18 @@ async def generar_publicacion_cumpleanios(
             "id": str(existente.id)
         }
     
-    # Buscar cumpleañeros del día
-    empleados = db.query(Personal).filter(Personal.activo == True).all()
-    cumpleanieros = []
+    # 🆕 Buscar cumpleañeros del día filtrados por empresa
+    query_empleados = db.query(Personal).filter(Personal.activo == True)
+    if emp_id:
+        query_empleados = query_empleados.filter(
+            or_(
+                Personal.empresa_id == emp_id,
+                Personal.empresa_id == None
+            )
+        )
+    empleados = query_empleados.all()
     
+    cumpleanieros = []
     for emp in empleados:
         if emp.fecha_nacimiento:
             if emp.fecha_nacimiento.month == hoy.month and emp.fecha_nacimiento.day == hoy.day:
@@ -528,11 +585,12 @@ async def generar_publicacion_cumpleanios(
         return {"message": "No hay cumpleañeros hoy", "cantidad": 0}
     
     # Generar contenido
-    fecha_formateada = hoy.strftime("%d de %B").replace("January", "enero").replace("February", "febrero") \
-        .replace("March", "marzo").replace("April", "abril").replace("May", "mayo") \
-        .replace("June", "junio").replace("July", "julio").replace("August", "agosto") \
-        .replace("September", "septiembre").replace("October", "octubre") \
-        .replace("November", "noviembre").replace("December", "diciembre")
+    meses = {
+        1: "enero", 2: "febrero", 3: "marzo", 4: "abril",
+        5: "mayo", 6: "junio", 7: "julio", 8: "agosto",
+        9: "septiembre", 10: "octubre", 11: "noviembre", 12: "diciembre"
+    }
+    fecha_formateada = f"{hoy.day} de {meses[hoy.month]}"
     
     lista = []
     for emp in cumpleanieros:
@@ -562,6 +620,7 @@ Que este nuevo año de vida esté lleno de éxitos, salud y momentos inolvidable
         categoria="cumpleanios",
         es_automatica=True,
         autor_id=current_user.id,
+        empresa_id=emp_id,  # 🆕 Asignar empresa
         fecha_publicacion=datetime.now(),
         activo=True
     )
@@ -570,30 +629,35 @@ Que este nuevo año de vida esté lleno de éxitos, salud y momentos inolvidable
     db.commit()
     db.refresh(publicacion)
     
-    logger.info(f"🎂 Publicación automática de cumpleaños creada: {publicacion.id} - {len(cumpleanieros)} cumpleañeros")
+    logger.info(f"🎂 Publicación automática de cumpleaños creada: {publicacion.id} - {len(cumpleanieros)} cumpleañeros | empresa: {emp_id}")
     
-    # 🆕 CREAR NOTIFICACIONES PARA TODOS LOS USUARIOS ACTIVOS
+    # 🆕 CREAR NOTIFICACIONES PARA USUARIOS DE LA EMPRESA
     try:
-        # Obtener todos los usuarios activos
-        usuarios_activos = db.query(Usuario).filter(Usuario.activo == True).all()
+        query_usuarios = db.query(Usuario).filter(Usuario.activo == True)
+        if emp_id:
+            query_usuarios = query_usuarios.filter(
+                or_(
+                    Usuario.empresa_id == emp_id,
+                    Usuario.empresa_id == None
+                )
+            )
+        usuarios_activos = query_usuarios.all()
         
         if usuarios_activos:
             usuarios_ids = [u.id for u in usuarios_activos]
             
-            # Crear notificaciones masivas
             cantidad = crear_notificacion_masiva(
-    db=db,
-    usuarios_ids=usuarios_ids,
-    tipo="cumpleanios",
-    titulo="🎂 ¡Feliz Cumpleaños!",
-    mensaje=f"Hoy celebramos a {len(cumpleanieros)} compañero(s)",
-    publicacion_id=publicacion.id
-)
+                db=db,
+                usuarios_ids=usuarios_ids,
+                tipo="cumpleanios",
+                titulo="🎂 ¡Feliz Cumpleaños!",
+                mensaje=f"Hoy celebramos a {len(cumpleanieros)} compañero(s)",
+                publicacion_id=publicacion.id
+            )
             
             logger.info(f"🔔 {cantidad} notificaciones de cumpleaños creadas")
     
     except Exception as e:
-        # Si falla la creación de notificaciones, no debe impedir que se cree la publicación
         logger.error(f"⚠️ Error creando notificaciones de cumpleaños: {e}")
     
     return {

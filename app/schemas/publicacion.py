@@ -1,5 +1,5 @@
 # app/schemas/publicacion.py
-# SCHEMAS PARA PUBLICACIONES - SIGUIENDO EL PATRÓN EXISTENTE
+# SCHEMAS PARA PUBLICACIONES - CON EMPRESA_ID
 
 from pydantic import BaseModel, Field, validator
 from typing import Optional, List, Dict, Any
@@ -19,6 +19,7 @@ class PublicacionBase(BaseModel):
     descripcion: Optional[str] = None
     categoria: Optional[str] = "general"
     es_automatica: Optional[bool] = False
+    empresa_id: Optional[UUID] = None  # 🆕 CAMPO EMPRESA_ID
     
     @validator('tipo')
     def validar_tipo(cls, v):
@@ -55,6 +56,7 @@ class PublicacionUpdate(BaseModel):
     url_archivo: Optional[str] = Field(None, max_length=500)
     descripcion: Optional[str] = None
     categoria: Optional[str] = None
+    empresa_id: Optional[UUID] = None  # 🆕 CAMPO EMPRESA_ID
     fecha_expiracion: Optional[datetime] = None
     activo: Optional[bool] = None
     fijado: Optional[bool] = None
@@ -78,6 +80,7 @@ class PublicacionResponse(PublicacionBase):
     autor_nombre: Optional[str] = None
     autor_area: Optional[str] = None
     autor_iniciales: Optional[str] = None
+    empresa_id: Optional[UUID] = None  # 🆕 CAMPO EMPRESA_ID
     fecha_publicacion: datetime
     fecha_expiracion: Optional[datetime] = None
     activo: bool
