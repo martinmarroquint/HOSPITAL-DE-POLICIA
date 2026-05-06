@@ -2,7 +2,7 @@
 API de Configuración Dinámica
 Endpoints para gestionar la configuración del sistema
 CADA EMPRESA TIENE SU PROPIA CONFIGURACIÓN
-CORREGIDO: empresa_id asignado automáticamente al crear recursos
+CORREGIDO: GETs accesibles para cualquier usuario autenticado
 """
 
 from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File
@@ -95,7 +95,7 @@ def get_empresa_id_from_user(current_user: Usuario) -> Optional[UUID]:
 @router.get("/estado", response_model=EstadoConfigResponse, tags=["Configuración"])
 async def get_estado_configuracion(
     service: ConfiguracionService = Depends(get_config_service),
-    current_user: Usuario = Depends(require_roles(["admin"]))
+    current_user: Usuario = Depends(get_current_active_user)
 ):
     """Retorna el estado de completitud de la configuración"""
     return service.get_estado()
@@ -109,7 +109,7 @@ async def get_estado_configuracion(
 async def listar_turnos(
     incluir_inactivos: bool = Query(False),
     service: ConfiguracionService = Depends(get_config_service),
-    current_user: Usuario = Depends(require_roles(["admin"]))
+    current_user: Usuario = Depends(get_current_active_user)
 ):
     """Lista todos los turnos configurados para la empresa del usuario"""
     turnos = service.get_turnos(incluir_inactivos)
@@ -191,7 +191,7 @@ async def crear_turnos_masivo(
 @router.get("/reglas", response_model=ReglaResponse, tags=["Configuración"])
 async def get_reglas(
     service: ConfiguracionService = Depends(get_config_service),
-    current_user: Usuario = Depends(require_roles(["admin"]))
+    current_user: Usuario = Depends(get_current_active_user)
 ):
     """Obtiene las reglas de cumplimiento"""
     reglas = service.get_reglas()
@@ -221,7 +221,7 @@ async def guardar_reglas(
 @router.get("/organigrama", response_model=OrganigramaResponse, tags=["Configuración"])
 async def get_organigrama(
     service: ConfiguracionService = Depends(get_config_service),
-    current_user: Usuario = Depends(require_roles(["admin"]))
+    current_user: Usuario = Depends(get_current_active_user)
 ):
     """Obtiene el organigrama completo"""
     return service.get_organigrama()
@@ -295,7 +295,7 @@ async def eliminar_unidad(
 @router.get("/roles", response_model=List[RolResponse], tags=["Configuración"])
 async def listar_roles(
     service: ConfiguracionService = Depends(get_config_service),
-    current_user: Usuario = Depends(require_roles(["admin"]))
+    current_user: Usuario = Depends(get_current_active_user)
 ):
     """Lista todos los roles"""
     roles = service.get_roles()
@@ -354,7 +354,7 @@ async def eliminar_rol(
 @router.get("/campos-personal", response_model=List[CampoPersonalResponse], tags=["Configuración"])
 async def get_campos_personal(
     service: ConfiguracionService = Depends(get_config_service),
-    current_user: Usuario = Depends(require_roles(["admin"]))
+    current_user: Usuario = Depends(get_current_active_user)
 ):
     """Obtiene la configuración de campos del personal para la empresa del usuario"""
     empresa_id = get_empresa_id_from_user(current_user)
@@ -385,7 +385,7 @@ async def guardar_campos_personal(
 async def listar_catalogos(
     tipo: Optional[str] = Query(None),
     service: ConfiguracionService = Depends(get_config_service),
-    current_user: Usuario = Depends(require_roles(["admin"]))
+    current_user: Usuario = Depends(get_current_active_user)
 ):
     """Lista catálogos, opcionalmente filtrados por tipo"""
     catalogos = service.get_catalogos(tipo)
