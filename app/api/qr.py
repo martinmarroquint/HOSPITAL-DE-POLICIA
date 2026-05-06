@@ -1,4 +1,7 @@
-# app/api/qr.py - VERSIÓN PROFESIONAL CON FIRMA HMAC + MÓDULO VISITANTES + QR ESTÁTICO AUTO-GENERADO
+# app/api/qr.py - VERSIÓN CORREGIDA
+# ✅ QR DINÁMICO: Solo para trabajadores (requiere login)
+# ✅ QR ESTÁTICO: Solo para visitantes (generado por admin)
+# ✅ SEPARACIÓN CLARA DE RESPONSABILIDADES
 
 from fastapi import APIRouter, Depends, HTTPException, status, Body, Query, Request
 from fastapi.responses import Response
@@ -60,7 +63,10 @@ QR_MENSAJES = {
     "REGISTRO_EXITOSO": "Asistencia registrada correctamente",
     "EMPLEADO_INACTIVO": "Personal inactivo o no encontrado",
     "QR_ESTATICO_GENERADO": "QR permanente generado para visitante",
-    "QR_ESTATICO_OBTENIDO": "QR estático obtenido correctamente"
+    "QR_ESTATICO_OBTENIDO": "QR estático obtenido correctamente",
+    "SOLO_VISITANTES": "Solo los visitantes pueden tener QR estático. Los trabajadores usan QR dinámico.",
+    "SOLO_TRABAJADORES": "Solo los trabajadores pueden generar QR dinámico. Los visitantes usan QR estático.",
+    "VISITANTE_INACTIVO": "Visitante inactivo o no encontrado"
 }
 
 ERROR_CODES = {
@@ -70,7 +76,9 @@ ERROR_CODES = {
     "QR_FIRMA_INVALIDA": "QR_FIRMA_INVALIDA",
     "SIN_TURNO": "SIN_TURNO",
     "EMPLEADO_NO_ENCONTRADO": "EMPLEADO_NO_ENCONTRADO",
-    "TIPO_INCORRECTO": "TIPO_INCORRECTO"
+    "TIPO_INCORRECTO": "TIPO_INCORRECTO",
+    "NO_ES_VISITANTE": "NO_ES_VISITANTE",
+    "NO_ES_TRABAJADOR": "NO_ES_TRABAJADOR"
 }
 
 router = APIRouter(prefix="", tags=["QR"])
@@ -117,28 +125,39 @@ def extraer_empleado_id(payload: dict, db: Session) -> Optional[str]:
     """Extrae el empleado_id soportando formato antiguo y nuevo."""
     if "empleado_id" in payload:
         return payload["empleado_id"]
+    if "personal_id" in payload:
+        return payload["personal_id"]
     if "i" in payload:
         id_corto = payload["i"]
-        empleado = db.query(Personal).filter(cast(Personal.id, String).endswith(id_corto)).first()
+        empleado = db.query(Personal).filter(
+            cast(Personal.id, String).endswith(id_corto)
+        ).first()
         if empleado:
             return str(empleado.id)
         nombre_corto = payload.get("n", "")
         if nombre_corto:
-            empleado = db.query(Personal).filter(Personal.nombre.ilike(f"%{nombre_corto}%")).first()
+            empleado = db.query(Personal).filter(
+                Personal.nombre.ilike(f"%{nombre_corto}%")
+            ).first()
             if empleado:
                 return str(empleado.id)
-    if "personal_id" in payload:
-        return payload["personal_id"]
     return None
 
 
-def generar_payload_nuevo_formato(empleado_id: str, empleado_nombre: str) -> dict:
+def generar_payload_nuevo_formato(empleado_id: str, empleado_nombre: str, es_visitante: bool = False) -> dict:
     """Genera el payload optimizado para el QR (formato v2)"""
     ahora_peru = get_peru_time()
     id_corto = generar_id_corto(empleado_id)
     nombre_corto = empleado_nombre.split(',')[0].strip()[:15]
     timestamp_corto = str(int(ahora_peru.timestamp()))[-6:]
-    return {"i": id_corto, "n": nombre_corto, "d": timestamp_corto, "t": "a", "v": "2"}
+    
+    return {
+        "i": id_corto,
+        "n": nombre_corto,
+        "d": timestamp_corto,
+        "t": "v" if es_visitante else "a",  # v=visitante, a=asistencia(trabajador)
+        "v": "2"
+    }
 
 
 def es_admin_o_super_admin(user: Usuario) -> bool:
@@ -161,22 +180,29 @@ def es_visitante_personal(personal: Personal) -> bool:
     return False
 
 
+def es_trabajador_personal(personal: Personal) -> bool:
+    """Verifica si un personal es trabajador (NO es visitante)"""
+    return not es_visitante_personal(personal)
+
+
 # =====================================================
-# 🆕 FUNCIÓN: GENERAR QR ESTÁTICO (usada por múltiples endpoints)
+# 🆕 FUNCIÓN: GENERAR QR ESTÁTICO (SOLO PARA VISITANTES)
 # =====================================================
 
 def crear_qr_estatico(db: Session, personal: Personal) -> QRRegistro:
     """
-    Crea un QR estático para un personal (visitante o empleado).
-    Retorna el objeto QRRegistro creado.
+    Crea un QR estático EXCLUSIVAMENTE para visitantes.
+    Los trabajadores NO deben tener QR estático.
     """
+    # ✅ VALIDACIÓN: Solo visitantes
+    if not es_visitante_personal(personal):
+        raise HTTPException(
+            status_code=400,
+            detail=QR_MENSAJES["SOLO_VISITANTES"]
+        )
+    
     ahora_peru = get_peru_time()
     empleado_id = personal.id
-    
-    # Determinar tipo
-    es_visitante = es_visitante_personal(personal)
-    tipo_qr = "visitante" if es_visitante else "estatico"
-    tipo_payload = "v" if es_visitante else "e"
     
     qr_id = f"qr-estatico-{empleado_id}"
     id_corto = generar_id_corto(str(empleado_id))
@@ -185,11 +211,17 @@ def crear_qr_estatico(db: Session, personal: Personal) -> QRRegistro:
     payload = {
         "i": id_corto,
         "n": nombre_corto,
-        "t": tipo_payload,
+        "t": "v",  # v = visitante
         "v": "2"
     }
     firma = firmar_payload(payload)
     payload["s"] = firma
+    
+    # Eliminar QR estáticos anteriores del mismo empleado
+    db.query(QRRegistro).filter(
+        QRRegistro.empleado_id == empleado_id,
+        QRRegistro.tipo == "visitante"
+    ).delete()
     
     qr_registro = QRRegistro(
         qr_id=qr_id,
@@ -197,14 +229,14 @@ def crear_qr_estatico(db: Session, personal: Personal) -> QRRegistro:
         generado_en=ahora_peru,
         expira_en=ahora_peru + timedelta(days=365),
         usado=False,
-        tipo=tipo_qr,
+        tipo="visitante",
         codigo=json.dumps(payload)
     )
     db.add(qr_registro)
     db.commit()
     db.refresh(qr_registro)
     
-    logger.info(f"✅ QR estático generado para: {personal.nombre} (tipo: {tipo_qr})")
+    logger.info(f"✅ QR estático generado para VISITANTE: {personal.nombre}")
     return qr_registro
 
 
@@ -215,27 +247,33 @@ def crear_qr_estatico(db: Session, personal: Personal) -> QRRegistro:
 @router.options("/generar")
 async def options_generar():
     return Response(status_code=200, headers={
-        "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Methods": "POST, OPTIONS",
-        "Access-Control-Allow-Headers": "Content-Type, Authorization", "Access-Control-Allow-Credentials": "true",
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Methods": "POST, OPTIONS",
+        "Access-Control-Allow-Headers": "Content-Type, Authorization",
+        "Access-Control-Allow-Credentials": "true",
     })
 
 @router.options("/validar")
 async def options_validar():
     return Response(status_code=200, headers={
-        "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Methods": "POST, OPTIONS",
-        "Access-Control-Allow-Headers": "Content-Type, Authorization", "Access-Control-Allow-Credentials": "true",
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Methods": "POST, OPTIONS",
+        "Access-Control-Allow-Headers": "Content-Type, Authorization",
+        "Access-Control-Allow-Credentials": "true",
     })
 
 @router.options("/empleado/{empleado_id}/qr-estatico")
 async def options_qr_estatico():
     return Response(status_code=200, headers={
-        "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Methods": "GET, OPTIONS",
-        "Access-Control-Allow-Headers": "Content-Type, Authorization", "Access-Control-Allow-Credentials": "true",
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Methods": "GET, OPTIONS",
+        "Access-Control-Allow-Headers": "Content-Type, Authorization",
+        "Access-Control-Allow-Credentials": "true",
     })
 
 
 # =====================================================
-# ENDPOINT: GENERAR QR DE ASISTENCIA (DINÁMICO)
+# ✅ ENDPOINT: GENERAR QR DINÁMICO (SOLO TRABAJADORES)
 # =====================================================
 
 @router.post("/generar")
@@ -243,36 +281,75 @@ async def generar_qr(
     db: Session = Depends(get_db),
     current_user: Usuario = Depends(get_current_user)
 ):
-    """Genera QR dinámico para empleados (expira en 10 segundos)"""
+    """
+    Genera QR dinámico para TRABAJADORES (expira en 10 segundos).
+    Los visitantes NO pueden generar QR dinámico.
+    """
     if not current_user.personal_id:
-        raise HTTPException(status_code=400, detail="Usuario no tiene personal asociado")
+        raise HTTPException(
+            status_code=400, 
+            detail="Usuario no tiene personal asociado"
+        )
     
-    personal = db.query(Personal).filter(Personal.id == current_user.personal_id, Personal.activo == True).first()
+    personal = db.query(Personal).filter(
+        Personal.id == current_user.personal_id,
+        Personal.activo == True
+    ).first()
+    
     if not personal:
-        raise HTTPException(status_code=404, detail=QR_MENSAJES["EMPLEADO_INACTIVO"])
+        raise HTTPException(
+            status_code=404, 
+            detail=QR_MENSAJES["EMPLEADO_INACTIVO"]
+        )
+    
+    # ✅ VALIDACIÓN: Solo trabajadores (no visitantes)
+    if es_visitante_personal(personal):
+        raise HTTPException(
+            status_code=400,
+            detail=QR_MENSAJES["SOLO_TRABAJADORES"]
+        )
     
     ahora_peru = get_peru_time()
     expira_en = ahora_peru + timedelta(seconds=QR_CONFIG["EXPIRACION_SEGUNDOS"])
     qr_id = f"qr-{int(ahora_peru.timestamp())}-{secrets.token_hex(4)}"
     
-    payload = generar_payload_nuevo_formato(str(current_user.personal_id), personal.nombre)
+    payload = generar_payload_nuevo_formato(
+        str(current_user.personal_id), 
+        personal.nombre,
+        es_visitante=False
+    )
     firma = firmar_payload(payload)
     payload["s"] = firma
     
     qr_registro = QRRegistro(
-        qr_id=qr_id, empleado_id=current_user.personal_id,
-        generado_en=ahora_peru, expira_en=expira_en, usado=False,
-        tipo="asistencia", codigo=json.dumps(payload)
+        qr_id=qr_id,
+        empleado_id=current_user.personal_id,
+        generado_en=ahora_peru,
+        expira_en=expira_en,
+        usado=False,
+        tipo="asistencia",
+        codigo=json.dumps(payload)
     )
     db.add(qr_registro)
     db.commit()
     
     qr_data = base64.b64encode(json.dumps(payload).encode()).decode()
-    return {"qr_data": qr_data, "qr_id": qr_id, "expira_en": expira_en.isoformat(), "tipo": "asistencia", "formato": "v2", "firmado": True, "mensaje": QR_MENSAJES["QR_GENERADO"]}
+    
+    logger.info(f"✅ QR dinámico generado para TRABAJADOR: {personal.nombre}")
+    
+    return {
+        "qr_data": qr_data,
+        "qr_id": qr_id,
+        "expira_en": expira_en.isoformat(),
+        "tipo": "asistencia",
+        "formato": "v2",
+        "firmado": True,
+        "mensaje": QR_MENSAJES["QR_GENERADO"]
+    }
 
 
 # =====================================================
-# 🆕 ENDPOINT: GENERAR QR ESTÁTICO PARA VISITANTES (ADMIN)
+# ✅ ENDPOINT: GENERAR QR ESTÁTICO (SOLO VISITANTES)
 # =====================================================
 
 @router.post("/generar-estatico")
@@ -281,23 +358,43 @@ async def generar_qr_estatico(
     db: Session = Depends(get_db),
     current_user: Usuario = Depends(get_current_active_user)
 ):
-    """Genera QR permanente para visitantes. Solo admin o super_admin."""
+    """
+    Genera QR permanente para VISITANTES.
+    Solo admin o super_admin pueden generar QR estáticos.
+    Los trabajadores NO pueden tener QR estático.
+    """
     if not es_admin_o_super_admin(current_user):
-        raise HTTPException(status_code=403, detail="Solo administradores pueden generar QR estáticos")
+        raise HTTPException(
+            status_code=403, 
+            detail="Solo administradores pueden generar QR estáticos"
+        )
     
     personal = db.query(Personal).filter(Personal.id == personal_id).first()
     if not personal:
-        raise HTTPException(status_code=404, detail="Visitante no encontrado")
+        raise HTTPException(
+            status_code=404, 
+            detail="Visitante no encontrado"
+        )
     if not personal.activo:
-        raise HTTPException(status_code=400, detail="Visitante inactivo")
+        raise HTTPException(
+            status_code=400, 
+            detail=QR_MENSAJES["VISITANTE_INACTIVO"]
+        )
+    
+    # ✅ VALIDACIÓN: Solo visitantes
+    if not es_visitante_personal(personal):
+        raise HTTPException(
+            status_code=400,
+            detail=QR_MENSAJES["SOLO_VISITANTES"]
+        )
     
     qr_registro = crear_qr_estatico(db, personal)
-    
     qr_data = base64.b64encode(qr_registro.codigo.encode()).decode()
+    
     return {
         "qr_data": qr_data,
         "qr_id": qr_registro.qr_id,
-        "tipo": "estatico",
+        "tipo": "visitante",
         "personal_id": str(personal_id),
         "nombre": personal.nombre,
         "mensaje": QR_MENSAJES["QR_ESTATICO_GENERADO"]
@@ -305,7 +402,7 @@ async def generar_qr_estatico(
 
 
 # =====================================================
-# 🆕 ENDPOINT CORREGIDO: OBTENER QR ESTÁTICO (AUTO-GENERA SI NO EXISTE)
+# ✅ ENDPOINT: OBTENER QR ESTÁTICO (SOLO VISITANTES)
 # =====================================================
 
 @router.get("/empleado/{empleado_id}/qr-estatico")
@@ -315,34 +412,50 @@ async def obtener_qr_estatico(
     current_user: Usuario = Depends(get_current_active_user)
 ):
     """
-    Obtiene el QR estático de un empleado/visitante.
-    Si no existe, lo GENERA AUTOMÁTICAMENTE.
-    Permitido para: el propio usuario, admin, o super_admin.
+    Obtiene el QR estático de un VISITANTE.
+    Los trabajadores NO tienen QR estático.
+    Si no existe, lo genera automáticamente.
     """
     # Verificar permisos
     es_propio = str(current_user.personal_id) == str(empleado_id)
     if not es_propio and not es_admin_o_super_admin(current_user):
-        raise HTTPException(status_code=403, detail="No tiene permiso para ver este QR")
+        raise HTTPException(
+            status_code=403, 
+            detail="No tiene permiso para ver este QR"
+        )
     
     # Buscar personal
     personal = db.query(Personal).filter(Personal.id == empleado_id).first()
     if not personal:
-        raise HTTPException(status_code=404, detail="Personal no encontrado")
+        raise HTTPException(
+            status_code=404, 
+            detail="Personal no encontrado"
+        )
     if not personal.activo:
-        raise HTTPException(status_code=400, detail="Personal inactivo")
+        raise HTTPException(
+            status_code=400, 
+            detail="Personal inactivo"
+        )
+    
+    # ✅ VALIDACIÓN: Solo visitantes pueden tener QR estático
+    if es_trabajador_personal(personal):
+        raise HTTPException(
+            status_code=400,
+            detail=QR_MENSAJES["SOLO_VISITANTES"]
+        )
     
     # Buscar QR estático existente no expirado
     ahora_peru = get_peru_time()
     qr = db.query(QRRegistro).filter(
         QRRegistro.empleado_id == empleado_id,
-        QRRegistro.tipo.in_(["visitante", "estatico"]),
+        QRRegistro.tipo == "visitante",
         QRRegistro.expira_en > ahora_peru,
         QRRegistro.usado == False
     ).order_by(QRRegistro.generado_en.desc()).first()
     
-    # 🆕 SI NO EXISTE, GENERARLO AUTOMÁTICAMENTE
+    # Si no existe, generarlo automáticamente
     if not qr:
-        logger.info(f"🔄 Generando QR estático automático para: {personal.nombre}")
+        logger.info(f"🔄 Generando QR estático automático para VISITANTE: {personal.nombre}")
         qr = crear_qr_estatico(db, personal)
     
     return {
@@ -357,7 +470,7 @@ async def obtener_qr_estatico(
 
 
 # =====================================================
-# ENDPOINT: VALIDAR QR DE ASISTENCIA (EMPLEADOS + VISITANTES)
+# ENDPOINT: VALIDAR QR DE ASISTENCIA (TRABAJADORES + VISITANTES)
 # =====================================================
 
 @router.post("/validar")
@@ -367,7 +480,12 @@ async def validar_qr(
     db: Session = Depends(get_db),
     current_user: Usuario = Depends(require_roles(["oficial_permanencia", "control_qr", "admin"]))
 ):
-    """Valida QR. Soporta empleados (requiere turno) y visitantes (sin turno)."""
+    """
+    Valida QR de asistencia.
+    Soporta:
+    - Trabajadores: QR dinámico (t:a), requiere turno
+    - Visitantes: QR estático (t:v), sin turno
+    """
     logger.info(f"Validando QR - Tipo: {tipo}")
     
     try:
@@ -376,55 +494,97 @@ async def validar_qr(
         formato_version = payload.get("v", "1")
         
         if formato_version == "2" and not verificar_firma(payload):
-            raise HTTPException(status_code=400, detail=ERROR_CODES["QR_FIRMA_INVALIDA"])
+            raise HTTPException(
+                status_code=400, 
+                detail=ERROR_CODES["QR_FIRMA_INVALIDA"]
+            )
         
         empleado_id = extraer_empleado_id(payload, db)
         if not empleado_id:
-            raise HTTPException(status_code=400, detail=ERROR_CODES["QR_INVALIDO"])
+            raise HTTPException(
+                status_code=400, 
+                detail=ERROR_CODES["QR_INVALIDO"]
+            )
         
         es_visitante = payload.get("t") == "v"
         ahora_peru = get_peru_time()
         
         empleado = db.query(Personal).filter(Personal.id == empleado_id).first()
         if not empleado:
-            raise HTTPException(status_code=404, detail=ERROR_CODES["EMPLEADO_NO_ENCONTRADO"])
+            raise HTTPException(
+                status_code=404, 
+                detail=ERROR_CODES["EMPLEADO_NO_ENCONTRADO"]
+            )
         if not empleado.activo:
-            raise HTTPException(status_code=400, detail=QR_MENSAJES["EMPLEADO_INACTIVO"])
+            raise HTTPException(
+                status_code=400, 
+                detail=QR_MENSAJES["EMPLEADO_INACTIVO"]
+            )
         
         hoy = ahora_peru.date()
         turno_codigo = "VISITANTE"
         
         if not es_visitante:
-            planificacion = db.query(Planificacion).filter(Planificacion.personal_id == empleado_id, Planificacion.fecha == hoy).first()
+            # Lógica para trabajadores
+            planificacion = db.query(Planificacion).filter(
+                Planificacion.personal_id == empleado_id,
+                Planificacion.fecha == hoy
+            ).first()
+            
             if not planificacion:
-                raise HTTPException(status_code=400, detail=ERROR_CODES["SIN_TURNO"])
+                raise HTTPException(
+                    status_code=400, 
+                    detail=ERROR_CODES["SIN_TURNO"]
+                )
+            
             turno_codigo = planificacion.turno_codigo
             
             inicio_dia = datetime.combine(hoy, datetime.min.time())
-            ultimo_registro = db.query(Asistencia).filter(Asistencia.personal_id == empleado_id, Asistencia.timestamp >= inicio_dia).order_by(Asistencia.timestamp.desc()).first()
+            ultimo_registro = db.query(Asistencia).filter(
+                Asistencia.personal_id == empleado_id,
+                Asistencia.timestamp >= inicio_dia
+            ).order_by(Asistencia.timestamp.desc()).first()
+            
             tipo_permitido = "ENTRADA"
             if ultimo_registro and ultimo_registro.tipo == "ENTRADA":
                 tipo_permitido = "SALIDA"
+            
             if tipo != tipo_permitido:
-                raise HTTPException(status_code=400, detail=f"Debe registrar {tipo_permitido} primero")
+                raise HTTPException(
+                    status_code=400, 
+                    detail=f"Debe registrar {tipo_permitido} primero"
+                )
         
+        # Registrar asistencia
         asistencia = Asistencia(
-            personal_id=empleado_id, timestamp=ahora_peru, tipo=tipo,
-            tipo_registro="QR", turno_codigo=turno_codigo,
-            verificado=True, created_by=current_user.id
+            personal_id=empleado_id,
+            timestamp=ahora_peru,
+            tipo=tipo,
+            tipo_registro="QR",
+            turno_codigo=turno_codigo,
+            verificado=True,
+            created_by=current_user.id
         )
         db.add(asistencia)
         db.commit()
         
-        tipo_persona = "Visitante" if es_visitante else "Empleado"
-        logger.info(f"Asistencia registrada ({tipo_persona}): {empleado.nombre} - {tipo}")
+        tipo_persona = "Visitante" if es_visitante else "Trabajador"
+        logger.info(f"✅ Asistencia registrada ({tipo_persona}): {empleado.nombre} - {tipo}")
         
         return {
-            "valido": True, "empleado_id": str(empleado_id), "empleado_nombre": empleado.nombre,
-            "tipo": tipo, "tipo_persona": tipo_persona, "timestamp": ahora_peru.isoformat(),
-            "turno": turno_codigo, "formato": formato_version, "firmado": formato_version == "2",
-            "es_visitante": es_visitante, "mensaje": QR_MENSAJES["REGISTRO_EXITOSO"]
+            "valido": True,
+            "empleado_id": str(empleado_id),
+            "empleado_nombre": empleado.nombre,
+            "tipo": tipo,
+            "tipo_persona": tipo_persona,
+            "timestamp": ahora_peru.isoformat(),
+            "turno": turno_codigo,
+            "formato": formato_version,
+            "firmado": formato_version == "2",
+            "es_visitante": es_visitante,
+            "mensaje": QR_MENSAJES["REGISTRO_EXITOSO"]
         }
+        
     except json.JSONDecodeError:
         raise HTTPException(status_code=400, detail=ERROR_CODES["QR_INVALIDO"])
     except HTTPException:
@@ -446,17 +606,30 @@ async def obtener_qr_activo(
 ):
     """Obtiene el QR activo de un empleado"""
     if str(current_user.personal_id) != str(empleado_id) and not es_admin_o_super_admin(current_user):
-        raise HTTPException(status_code=403, detail="No tiene permiso para ver este QR")
+        raise HTTPException(
+            status_code=403, 
+            detail="No tiene permiso para ver este QR"
+        )
     
     ahora_peru = get_peru_time()
     qr_activo = db.query(QRRegistro).filter(
-        QRRegistro.empleado_id == empleado_id, QRRegistro.expira_en > ahora_peru,
-        QRRegistro.usado == False, QRRegistro.tipo.in_(["asistencia", "visitante"])
+        QRRegistro.empleado_id == empleado_id,
+        QRRegistro.expira_en > ahora_peru,
+        QRRegistro.usado == False,
+        QRRegistro.tipo.in_(["asistencia", "visitante"])
     ).order_by(QRRegistro.generado_en.desc()).first()
     
     if not qr_activo:
         return {"activo": False}
-    return {"activo": True, "qr_id": qr_activo.qr_id, "generado_en": qr_activo.generado_en.isoformat(), "expira_en": qr_activo.expira_en.isoformat(), "segundos_restantes": int((qr_activo.expira_en - ahora_peru).total_seconds()), "tipo": qr_activo.tipo}
+    
+    return {
+        "activo": True,
+        "qr_id": qr_activo.qr_id,
+        "generado_en": qr_activo.generado_en.isoformat(),
+        "expira_en": qr_activo.expira_en.isoformat(),
+        "segundos_restantes": int((qr_activo.expira_en - ahora_peru).total_seconds()),
+        "tipo": qr_activo.tipo
+    }
 
 
 # =====================================================
@@ -466,7 +639,11 @@ async def obtener_qr_activo(
 @router.post("/generar-token/{solicitud_id}")
 async def generar_token_emergencia(
     solicitud_id: UUID,
-    duracion: int = Query(QR_CONFIG["TOKEN_EMERGENCIA_DURACION_DEFAULT"], ge=QR_CONFIG["TOKEN_EMERGENCIA_DURACION_MINUTOS"], le=QR_CONFIG["TOKEN_EMERGENCIA_DURACION_MAXIMA"]),
+    duracion: int = Query(
+        QR_CONFIG["TOKEN_EMERGENCIA_DURACION_DEFAULT"],
+        ge=QR_CONFIG["TOKEN_EMERGENCIA_DURACION_MINUTOS"],
+        le=QR_CONFIG["TOKEN_EMERGENCIA_DURACION_MAXIMA"]
+    ),
     db: Session = Depends(get_db),
     current_user: Usuario = Depends(get_current_active_user)
 ):
@@ -480,17 +657,28 @@ async def generar_token_emergencia(
     ahora_peru = get_peru_time()
     token = secrets.token_hex(8).upper()
     expira_en = ahora_peru + timedelta(minutes=duracion)
-    return {"token": token, "expira_en": expira_en.isoformat(), "duracion_minutos": duracion, "mensaje": f"Token válido por {duracion} minutos"}
+    
+    return {
+        "token": token,
+        "expira_en": expira_en.isoformat(),
+        "duracion_minutos": duracion,
+        "mensaje": f"Token válido por {duracion} minutos"
+    }
 
 
 @router.post("/validar-token")
 async def validar_token_emergencia(
-    solicitud_id: UUID = Body(...), token: str = Body(...),
+    solicitud_id: UUID = Body(...),
+    token: str = Body(...),
     db: Session = Depends(get_db),
     current_user: Usuario = Depends(require_roles(["control_qr", "admin", "oficial_permanencia"]))
 ):
     """Valida token de emergencia"""
-    return {"valido": True, "mensaje": "Token válido", "solicitud_id": str(solicitud_id)}
+    return {
+        "valido": True,
+        "mensaje": "Token válido",
+        "solicitud_id": str(solicitud_id)
+    }
 
 
 # =====================================================
@@ -499,8 +687,10 @@ async def validar_token_emergencia(
 
 @router.post("/generar-para-tramite/{solicitud_id}")
 async def generar_qr_tramite(
-    solicitud_id: UUID, incluir_trazabilidad: bool = Query(True),
-    db: Session = Depends(get_db), current_user: Usuario = Depends(get_current_active_user)
+    solicitud_id: UUID,
+    incluir_trazabilidad: bool = Query(True),
+    db: Session = Depends(get_db),
+    current_user: Usuario = Depends(get_current_active_user)
 ):
     """Genera QR para trámite aprobado"""
     solicitud = db.query(Solicitud).filter(Solicitud.id == solicitud_id).first()
@@ -513,29 +703,49 @@ async def generar_qr_tramite(
     payload = {"t": "t", "s": str(solicitud_id)[-8:], "v": "2"}
     payload["s"] = firmar_payload(payload)
     qr_data = base64.b64encode(json.dumps(payload).encode()).decode()
-    return {"qr_data": qr_data, "qr_id": qr_id, "expira_en": expira_en.isoformat(), "tipo": "tramite", "formato": "v2", "firmado": True, "mensaje": "QR de trámite generado correctamente"}
+    
+    return {
+        "qr_data": qr_data,
+        "qr_id": qr_id,
+        "expira_en": expira_en.isoformat(),
+        "tipo": "tramite",
+        "formato": "v2",
+        "firmado": True,
+        "mensaje": "QR de trámite generado correctamente"
+    }
 
 
 @router.post("/validar-tramite")
 async def validar_qr_tramite(
     qr_data: str = Body(...),
-    db: Session = Depends(get_db), current_user: Usuario = Depends(get_current_active_user)
+    db: Session = Depends(get_db),
+    current_user: Usuario = Depends(get_current_active_user)
 ):
     """Valida QR de trámite"""
     try:
         decoded = base64.b64decode(qr_data).decode()
         payload = json.loads(decoded)
+        
         if payload.get("t") != "t":
             raise HTTPException(status_code=400, detail="QR inválido para trámite")
         if not verificar_firma(payload):
             raise HTTPException(status_code=400, detail="Firma QR inválida")
         
-        solicitud = db.query(Solicitud).filter(cast(Solicitud.id, String).endswith(payload.get("s", ""))).first()
+        solicitud = db.query(Solicitud).filter(
+            cast(Solicitud.id, String).endswith(payload.get("s", ""))
+        ).first()
+        
         if not solicitud:
             raise HTTPException(status_code=404, detail="Solicitud no encontrada")
         if solicitud.estado != "aprobada":
             raise HTTPException(status_code=400, detail="Solicitud no está aprobada")
-        return {"valido": True, "solicitud_id": str(solicitud.id), "firmado": True, "mensaje": "Trámite válido"}
+        
+        return {
+            "valido": True,
+            "solicitud_id": str(solicitud.id),
+            "firmado": True,
+            "mensaje": "Trámite válido"
+        }
     except HTTPException:
         raise
     except Exception as e:
