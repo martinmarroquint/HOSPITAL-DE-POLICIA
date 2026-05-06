@@ -80,7 +80,7 @@ def get_or_create_config_cliente(db: Session, empresa_id: UUID, empresa_nombre: 
 
 
 # =====================================================
-# 🆕 FUNCIÓN AUXILIAR: Obtener empresa_id del usuario
+# FUNCIÓN AUXILIAR: Obtener empresa_id del usuario
 # =====================================================
 
 def get_empresa_id_from_user(current_user: Usuario) -> Optional[UUID]:
@@ -113,7 +113,6 @@ async def listar_turnos(
 ):
     """Lista todos los turnos configurados para la empresa del usuario"""
     turnos = service.get_turnos(incluir_inactivos)
-    # 🆕 Filtrar por empresa_id
     empresa_id = get_empresa_id_from_user(current_user)
     if empresa_id and current_user.rol_global != "super_admin":
         turnos = [t for t in turnos if not t.empresa_id or t.empresa_id == empresa_id]
@@ -129,7 +128,6 @@ async def crear_turno(
     """Crea un nuevo tipo de turno asignado a la empresa del usuario"""
     try:
         turno_data = turno.model_dump()
-        # 🆕 Asignar empresa_id del usuario actual
         empresa_id = get_empresa_id_from_user(current_user)
         if empresa_id:
             turno_data['empresa_id'] = str(empresa_id)
@@ -178,7 +176,6 @@ async def crear_turnos_masivo(
 ):
     """Crea múltiples turnos a la vez"""
     turnos_data = data.get("turnos", [])
-    # 🆕 Asignar empresa_id a cada turno
     empresa_id = get_empresa_id_from_user(current_user)
     if empresa_id:
         for t in turnos_data:
@@ -211,7 +208,6 @@ async def guardar_reglas(
 ):
     """Guarda o actualiza las reglas de cumplimiento"""
     reglas_data = reglas.model_dump()
-    # 🆕 Asignar empresa_id
     empresa_id = get_empresa_id_from_user(current_user)
     if empresa_id:
         reglas_data['empresa_id'] = str(empresa_id)
@@ -239,7 +235,6 @@ async def guardar_niveles(
 ):
     """Guarda los niveles jerárquicos"""
     niveles_data = data.get("niveles", [])
-    # 🆕 Asignar empresa_id a cada nivel
     empresa_id = get_empresa_id_from_user(current_user)
     if empresa_id:
         for n in niveles_data:
@@ -257,7 +252,6 @@ async def crear_unidad(
     """Crea una unidad organizacional"""
     try:
         unidad_data = unidad.model_dump()
-        # 🆕 Asignar empresa_id
         empresa_id = get_empresa_id_from_user(current_user)
         if empresa_id:
             unidad_data['empresa_id'] = str(empresa_id)
@@ -317,7 +311,6 @@ async def crear_rol(
     """Crea un nuevo rol"""
     try:
         rol_data = rol.model_dump()
-        # 🆕 Asignar empresa_id
         empresa_id = get_empresa_id_from_user(current_user)
         if empresa_id:
             rol_data['empresa_id'] = str(empresa_id)
@@ -363,8 +356,9 @@ async def get_campos_personal(
     service: ConfiguracionService = Depends(get_config_service),
     current_user: Usuario = Depends(require_roles(["admin"]))
 ):
-    """Obtiene la configuración de campos del personal"""
-    campos = service.get_campos_personal()
+    """Obtiene la configuración de campos del personal para la empresa del usuario"""
+    empresa_id = get_empresa_id_from_user(current_user)
+    campos = service.get_campos_personal(empresa_id)
     return [c.to_dict() for c in campos]
 
 
@@ -374,8 +368,12 @@ async def guardar_campos_personal(
     service: ConfiguracionService = Depends(get_config_service),
     current_user: Usuario = Depends(require_roles(["admin"]))
 ):
-    """Guarda la configuración de campos del personal"""
-    campos = service.guardar_campos_personal([c.model_dump() for c in data.campos])
+    """Guarda la configuración de campos del personal para la empresa del usuario"""
+    empresa_id = get_empresa_id_from_user(current_user)
+    campos = service.guardar_campos_personal(
+        [c.model_dump() for c in data.campos], 
+        empresa_id
+    )
     return {"success": True, "campos": len(campos)}
 
 
@@ -402,7 +400,6 @@ async def crear_catalogo(
 ):
     """Crea una entrada de catálogo"""
     catalogo_data = catalogo.model_dump()
-    # 🆕 Asignar empresa_id
     empresa_id = get_empresa_id_from_user(current_user)
     if empresa_id:
         catalogo_data['empresa_id'] = str(empresa_id)
@@ -424,7 +421,7 @@ async def eliminar_catalogo(
 
 
 # =====================================================
-# 🆕 CONFIGURACIÓN DEL CLIENTE (POR EMPRESA)
+# CONFIGURACIÓN DEL CLIENTE (POR EMPRESA)
 # =====================================================
 
 @router.get("/cliente", response_model=ClienteConfigResponse, tags=["Configuración"])
@@ -471,7 +468,7 @@ async def update_config_cliente(
 
 
 # =====================================================
-# 🆕 SUBIDA DE LOGO (POR EMPRESA)
+# SUBIDA DE LOGO (POR EMPRESA)
 # =====================================================
 
 @router.post("/cliente/logo", tags=["Configuración"])
@@ -542,7 +539,7 @@ async def eliminar_logo_cliente(
 
 
 # =====================================================
-# 🆕 SEMILLA DE NIVELES POR DEFECTO
+# SEMILLA DE NIVELES POR DEFECTO
 # =====================================================
 
 @router.post("/organigrama/niveles/semilla", tags=["Configuración"])
@@ -564,7 +561,6 @@ async def crear_niveles_semilla(
         {"nombre": "Grupo / Equipo",  "color": "#6B7280", "orden": 10, "requiere_jefe": False},
     ]
     
-    # 🆕 Asignar empresa_id a cada nivel
     empresa_id = get_empresa_id_from_user(current_user)
     if empresa_id:
         for n in niveles_default:
@@ -583,7 +579,7 @@ async def crear_niveles_semilla(
 
 
 # =====================================================
-# 🆕 CONFIG PÚBLICA (SIN AUTENTICACIÓN)
+# CONFIG PÚBLICA (SIN AUTENTICACIÓN)
 # =====================================================
 
 @router.get("/cliente/publico", tags=["Configuración"])

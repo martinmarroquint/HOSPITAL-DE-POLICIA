@@ -223,6 +223,9 @@ class CampoPersonalBase(BaseModel):
     obligatorio: Optional[bool] = False
     habilitado: Optional[bool] = True
     sistema: Optional[bool] = False
+    seccion: Optional[str] = "adicional"
+    aplica_a: Optional[Dict[str, bool]] = Field(default={"personal": True, "visitante": False})
+    descripcion: Optional[str] = None
     etiqueta: Optional[str] = None
     opciones: Optional[List[str]] = []
     catalogo: Optional[str] = None
@@ -238,6 +241,9 @@ class CampoPersonalUpdate(BaseModel):
     tipo: Optional[str] = None
     obligatorio: Optional[bool] = None
     habilitado: Optional[bool] = None
+    seccion: Optional[str] = None
+    aplica_a: Optional[Dict[str, bool]] = None
+    descripcion: Optional[str] = None
     etiqueta: Optional[str] = None
     opciones: Optional[List[str]] = None
     catalogo: Optional[str] = None

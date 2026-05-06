@@ -1,6 +1,7 @@
 """
 DEPENDENCIAS MULTI-EMPRESA
 Autenticación, autorización y control de acceso por empresa_id y rol_global
+CORREGIDO: Super admin NO puede acceder a datos de empresas
 """
 
 from fastapi import Depends, HTTPException, status
@@ -34,26 +35,22 @@ async def get_current_user(
         
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
-        detail="Credenciales inválidas. Inicie sesión nuevamente.",
+        detail="Credenciales invalidas. Inicie sesion nuevamente.",
         headers={"WWW-Authenticate": "Bearer"},
     )
     
-    # Decodificar token
     payload = decode_token(token)
     if payload is None:
         raise credentials_exception
     
-    # Obtener email del token
     username: str = payload.get("sub")
     if username is None:
         raise credentials_exception
     
-    # Buscar usuario en base de datos
     user = db.query(Usuario).filter(Usuario.email.ilike(username)).first()
     if user is None:
         raise credentials_exception
     
-    # Verificar que el usuario esté activo
     if not user.activo:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -81,13 +78,11 @@ async def get_current_user(
 async def get_current_active_user(
     current_user: Usuario = Depends(get_current_user),
 ) -> Usuario:
-    """
-    Verifica que el usuario esté autenticado y activo.
-    """
+    """Verifica que el usuario este autenticado y activo."""
     if not current_user:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="No autenticado. Inicie sesión."
+            detail="No autenticado. Inicie sesion."
         )
     if not current_user.activo:
         raise HTTPException(
@@ -97,12 +92,17 @@ async def get_current_active_user(
     return current_user
 
 
+# =====================================================
+# ROLES GLOBALES
+# =====================================================
+
 async def get_current_super_admin(
     current_user: Usuario = Depends(get_current_active_user),
 ) -> Usuario:
     """
     Verifica que el usuario sea super_admin.
-    Solo el dueño del sistema tiene este rol.
+    SOLO para dashboard de monitoreo multi-empresa.
+    NO puede acceder a datos de empresas especificas.
     """
     if current_user.rol_global != "super_admin":
         raise HTTPException(
@@ -116,24 +116,55 @@ async def get_current_admin_empresa(
     current_user: Usuario = Depends(get_current_active_user),
 ) -> Usuario:
     """
-    Verifica que el usuario sea admin_empresa o super_admin.
+    Verifica que el usuario sea admin_empresa EXCLUSIVAMENTE.
+    El super_admin NO tiene acceso a datos de empresas.
+    Debe usar impersonation si necesita acceder.
     """
-    if current_user.rol_global not in ["super_admin", "admin_empresa"]:
+    # Super admin NO puede acceder a datos de empresas
+    if current_user.rol_global == "super_admin":
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Acceso restringido. Se requiere rol admin_empresa."
+            detail="Super admin no tiene acceso a datos de empresas. "
+                   "Use el dashboard de monitoreo o active impersonation."
         )
+    
+    # Debe ser admin_empresa o tener rol 'admin' interno
+    roles = current_user.roles or []
+    is_admin_global = current_user.rol_global == "admin_empresa"
+    is_admin_interno = "admin" in [r.lower() for r in roles if isinstance(r, str)]
+    
+    if not is_admin_global and not is_admin_interno:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Acceso restringido. Se requiere rol de administrador de empresa."
+        )
+    
+    if not current_user.empresa_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Usuario sin empresa asignada."
+        )
+    
     return current_user
 
 
 def require_roles(required_roles: List[str]):
     """
     Verifica que el usuario tenga al menos uno de los roles internos requeridos.
-    El rol 'admin' tiene acceso automático a todo.
+    El rol 'admin' tiene acceso automatico a todo.
+    El super_admin NO tiene acceso a endpoints de empresa.
     """
     async def role_checker(
         current_user: Usuario = Depends(get_current_active_user),
     ) -> Usuario:
+        # Si es super_admin, DENEGAR acceso a endpoints de empresa
+        if current_user.rol_global == "super_admin":
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Super admin no tiene acceso a esta funcion. "
+                       "Use el dashboard de monitoreo."
+            )
+        
         if not has_role(current_user.roles or [], required_roles):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
@@ -146,7 +177,7 @@ def require_roles(required_roles: List[str]):
 def require_rol_global(allowed_roles: List[str]):
     """
     Verifica que el usuario tenga un rol global permitido.
-    super_admin siempre tiene acceso.
+    super_admin SIEMPRE tiene acceso a endpoints de super_admin.
     """
     async def rol_global_checker(
         current_user: Usuario = Depends(get_current_active_user),
@@ -166,7 +197,7 @@ require_jefe_area = require_roles(["admin", "jefe_area"])
 require_oficial_permanencia = require_roles(["admin", "oficial_permanencia"])
 require_control_qr = require_roles(["admin", "control_qr", "oficial_permanencia"])
 require_super_admin = require_rol_global(["super_admin"])
-require_admin_empresa = require_rol_global(["super_admin", "admin_empresa"])
+require_admin_empresa = require_rol_global(["admin_empresa"])
 
 
 def get_current_user_id(
@@ -193,14 +224,14 @@ def get_current_empresa_id(
 def get_current_user_info(
     current_user: Usuario = Depends(get_current_active_user)
 ) -> dict:
-    """Obtiene información completa del usuario actual"""
+    """Obtiene informacion completa del usuario actual"""
     return {
-        "id": current_user.id,
+        "id": str(current_user.id),
         "email": current_user.email,
         "username": current_user.username,
         "roles": current_user.roles,
-        "personal_id": current_user.personal_id,
-        "empresa_id": current_user.empresa_id,
+        "personal_id": str(current_user.personal_id) if current_user.personal_id else None,
+        "empresa_id": str(current_user.empresa_id) if current_user.empresa_id else None,
         "rol_global": current_user.rol_global,
         "activo": current_user.activo
     }
@@ -212,7 +243,7 @@ async def get_current_user_or_none(
 ) -> Optional[Usuario]:
     """
     Obtiene el usuario actual o None si no hay token.
-    Para endpoints que pueden ser públicos o privados.
+    Para endpoints que pueden ser publicos o privados.
     """
     if not token:
         return None
@@ -229,7 +260,7 @@ async def get_current_user_or_none(
 async def verify_token(
     token: str = Depends(oauth2_scheme)
 ) -> bool:
-    """Verifica si un token es válido sin obtener el usuario"""
+    """Verifica si un token es valido sin obtener el usuario"""
     if not token:
         return False
     

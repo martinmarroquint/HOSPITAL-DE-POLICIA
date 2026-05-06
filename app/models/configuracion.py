@@ -54,11 +54,13 @@ class TipoCampo(str, enum.Enum):
     TEXTO = "texto"
     NUMERO = "numero"
     EMAIL = "email"
+    TELEFONO = "telefono"
     FECHA = "fecha"
     SELECTOR = "selector"
     CATALOGO = "catalogo"
     ORGANIGRAMA = "organigrama"
     TEXTAREA = "textarea"
+    MONEDA = "moneda"
     BOOLEAN = "boolean"
 
 
@@ -287,12 +289,15 @@ class ConfigCampoPersonal(Base):
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     empresa_id = Column(UUID(as_uuid=True), ForeignKey("empresas.id"), nullable=True)
-    campo_id = Column(String(50), nullable=False, unique=True)
+    campo_id = Column(String(50), nullable=False)
     nombre = Column(String(100), nullable=False)
     tipo = Column(Enum(TipoCampo), default=TipoCampo.TEXTO)
     obligatorio = Column(Boolean, default=False)
     habilitado = Column(Boolean, default=True)
     sistema = Column(Boolean, default=False)
+    seccion = Column(String(20), default="adicional")
+    aplica_a = Column(JSON, default={"personal": True, "visitante": False})
+    descripcion = Column(String(200), nullable=True)
     etiqueta = Column(String(100), nullable=True)
     opciones = Column(JSON, default=[])
     catalogo = Column(String(50), nullable=True)
@@ -313,6 +318,9 @@ class ConfigCampoPersonal(Base):
             "obligatorio": self.obligatorio,
             "habilitado": self.habilitado,
             "sistema": self.sistema,
+            "seccion": self.seccion or "adicional",
+            "aplica_a": self.aplica_a or {"personal": True, "visitante": False},
+            "descripcion": self.descripcion,
             "etiqueta": self.etiqueta,
             "opciones": self.opciones or [],
             "catalogo": self.catalogo,

@@ -34,7 +34,7 @@ class ConfiguracionService:
             "organigrama": self.db.query(ConfigUnidad).filter(ConfigUnidad.activo == True).count() > 0,
             "roles": self.db.query(ConfigRol).filter(ConfigRol.activo == True).count() > 0,
             "campos": self.db.query(ConfigCampoPersonal).filter(ConfigCampoPersonal.habilitado == True).count() > 0,
-            "usuarios": False  # Se completa cuando hay personal cargado
+            "usuarios": False
         }
         
         total = len(completado)
@@ -61,7 +61,7 @@ class ConfiguracionService:
         self.db.add(turno)
         self.db.commit()
         self.db.refresh(turno)
-        logger.info(f"✅ Turno creado: {turno.codigo} - {turno.nombre}")
+        logger.info(f"Turno creado: {turno.codigo} - {turno.nombre}")
         return turno
     
     def actualizar_turno(self, turno_id: UUID, data: Dict[str, Any]) -> ConfigTurno:
@@ -75,7 +75,7 @@ class ConfiguracionService:
         
         self.db.commit()
         self.db.refresh(turno)
-        logger.info(f"✅ Turno actualizado: {turno.codigo}")
+        logger.info(f"Turno actualizado: {turno.codigo}")
         return turno
     
     def eliminar_turno(self, turno_id: UUID) -> bool:
@@ -87,7 +87,7 @@ class ConfiguracionService:
         
         self.db.delete(turno)
         self.db.commit()
-        logger.info(f"🗑️ Turno eliminado: {turno.codigo}")
+        logger.info(f"Turno eliminado: {turno.codigo}")
         return True
     
     def crear_turnos_masivo(self, turnos_data: List[Dict[str, Any]]) -> List[ConfigTurno]:
@@ -97,7 +97,7 @@ class ConfiguracionService:
             self.db.add(turno)
             creados.append(turno)
         self.db.commit()
-        logger.info(f"✅ {len(creados)} turnos creados masivamente")
+        logger.info(f"{len(creados)} turnos creados masivamente")
         return creados
     
     # =====================================================
@@ -116,14 +116,14 @@ class ConfiguracionService:
                     setattr(regla_existente, key, value)
             self.db.commit()
             self.db.refresh(regla_existente)
-            logger.info("✅ Reglas actualizadas")
+            logger.info("Reglas actualizadas")
             return regla_existente
         else:
             regla = ConfigRegla(**data)
             self.db.add(regla)
             self.db.commit()
             self.db.refresh(regla)
-            logger.info("✅ Reglas creadas")
+            logger.info("Reglas creadas")
             return regla
     
     # =====================================================
@@ -136,7 +136,6 @@ class ConfiguracionService:
         ).order_by(ConfigNivelJerarquico.orden).all()
     
     def guardar_niveles(self, niveles_data: List[Dict[str, Any]]) -> List[ConfigNivelJerarquico]:
-        # Eliminar existentes
         self.db.query(ConfigNivelJerarquico).delete()
         
         creados = []
@@ -146,7 +145,7 @@ class ConfiguracionService:
             creados.append(nivel)
         
         self.db.commit()
-        logger.info(f"✅ {len(creados)} niveles jerárquicos guardados")
+        logger.info(f"{len(creados)} niveles jerarquicos guardados")
         return creados
     
     # =====================================================
@@ -169,7 +168,7 @@ class ConfiguracionService:
         self.db.add(unidad)
         self.db.commit()
         self.db.refresh(unidad)
-        logger.info(f"✅ Unidad creada: {unidad.nombre}")
+        logger.info(f"Unidad creada: {unidad.nombre}")
         return unidad
     
     def actualizar_unidad(self, unidad_id: UUID, data: Dict[str, Any]) -> ConfigUnidad:
@@ -183,7 +182,7 @@ class ConfiguracionService:
         
         self.db.commit()
         self.db.refresh(unidad)
-        logger.info(f"✅ Unidad actualizada: {unidad.nombre}")
+        logger.info(f"Unidad actualizada: {unidad.nombre}")
         return unidad
     
     def eliminar_unidad(self, unidad_id: UUID) -> bool:
@@ -191,14 +190,13 @@ class ConfiguracionService:
         if not unidad:
             raise ValueError(f"Unidad {unidad_id} no encontrada")
         
-        # Desactivar unidades hijas
         hijas = self.db.query(ConfigUnidad).filter(ConfigUnidad.padre_id == unidad_id).all()
         for hija in hijas:
             hija.activo = False
         
         self.db.delete(unidad)
         self.db.commit()
-        logger.info(f"🗑️ Unidad eliminada: {unidad.nombre}")
+        logger.info(f"Unidad eliminada: {unidad.nombre}")
         return True
     
     # =====================================================
@@ -215,7 +213,7 @@ class ConfiguracionService:
         self.db.add(rol)
         self.db.commit()
         self.db.refresh(rol)
-        logger.info(f"✅ Rol creado: {rol.nombre}")
+        logger.info(f"Rol creado: {rol.nombre}")
         return rol
     
     def actualizar_rol(self, rol_id: UUID, data: Dict[str, Any]) -> ConfigRol:
@@ -229,7 +227,7 @@ class ConfiguracionService:
         
         self.db.commit()
         self.db.refresh(rol)
-        logger.info(f"✅ Rol actualizado: {rol.nombre}")
+        logger.info(f"Rol actualizado: {rol.nombre}")
         return rol
     
     def eliminar_rol(self, rol_id: UUID) -> bool:
@@ -241,39 +239,61 @@ class ConfiguracionService:
         
         self.db.delete(rol)
         self.db.commit()
-        logger.info(f"🗑️ Rol eliminado: {rol.nombre}")
+        logger.info(f"Rol eliminado: {rol.nombre}")
         return True
     
     # =====================================================
     # CAMPOS DEL PERSONAL
     # =====================================================
     
-    def get_campos_personal(self) -> List[ConfigCampoPersonal]:
-        return self.db.query(ConfigCampoPersonal).order_by(ConfigCampoPersonal.orden).all()
+    def get_campos_personal(self, empresa_id: Optional[UUID] = None) -> List[ConfigCampoPersonal]:
+        """Obtiene campos del personal filtrados por empresa_id"""
+        query = self.db.query(ConfigCampoPersonal)
+        if empresa_id:
+            query = query.filter(
+                (ConfigCampoPersonal.empresa_id == empresa_id) | 
+                (ConfigCampoPersonal.empresa_id == None)
+            )
+        return query.order_by(ConfigCampoPersonal.orden).all()
     
-    def guardar_campos_personal(self, campos_data: List[Dict[str, Any]]) -> List[ConfigCampoPersonal]:
-        # Eliminar existentes no-sistema
-        self.db.query(ConfigCampoPersonal).filter(ConfigCampoPersonal.sistema == False).delete()
+    def guardar_campos_personal(self, campos_data: List[Dict[str, Any]], empresa_id: Optional[UUID] = None) -> List[ConfigCampoPersonal]:
+        """Guarda los campos del personal para una empresa especifica"""
+        # Eliminar existentes no-sistema de esta empresa
+        query = self.db.query(ConfigCampoPersonal).filter(ConfigCampoPersonal.sistema == False)
+        if empresa_id:
+            query = query.filter(ConfigCampoPersonal.empresa_id == empresa_id)
+        query.delete()
         
         creados = []
         for data in campos_data:
-            # Verificar si ya existe (por campo_id)
-            existente = self.db.query(ConfigCampoPersonal).filter(
-                ConfigCampoPersonal.campo_id == data.get("campo_id")
-            ).first()
+            campo_id = data.get("campo_id")
+            
+            # Buscar existente
+            existente_query = self.db.query(ConfigCampoPersonal).filter(
+                ConfigCampoPersonal.campo_id == campo_id
+            )
+            if empresa_id:
+                existente_query = existente_query.filter(
+                    (ConfigCampoPersonal.empresa_id == empresa_id) | 
+                    (ConfigCampoPersonal.empresa_id == None)
+                )
+            existente = existente_query.first()
             
             if existente:
                 for key, value in data.items():
-                    if hasattr(existente, key):
+                    if hasattr(existente, key) and key not in ['id', 'empresa_id', 'created_at']:
                         setattr(existente, key, value)
+                existente.empresa_id = empresa_id
                 creados.append(existente)
             else:
-                campo = ConfigCampoPersonal(**data)
+                data_copy = {k: v for k, v in data.items() if k not in ['id', 'created_at']}
+                data_copy['empresa_id'] = empresa_id
+                campo = ConfigCampoPersonal(**data_copy)
                 self.db.add(campo)
                 creados.append(campo)
         
         self.db.commit()
-        logger.info(f"✅ {len(creados)} campos de personal guardados")
+        logger.info(f"{len(creados)} campos de personal guardados para empresa {empresa_id}")
         return creados
     
     # =====================================================
@@ -296,7 +316,7 @@ class ConfiguracionService:
     def eliminar_catalogo(self, catalogo_id: UUID) -> bool:
         catalogo = self.db.query(ConfigCatalogo).filter(ConfigCatalogo.id == catalogo_id).first()
         if not catalogo:
-            raise ValueError(f"Catálogo {catalogo_id} no encontrado")
+            raise ValueError(f"Catalogo {catalogo_id} no encontrado")
         self.db.delete(catalogo)
         self.db.commit()
         return True
