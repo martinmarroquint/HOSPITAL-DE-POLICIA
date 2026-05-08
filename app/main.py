@@ -1,6 +1,6 @@
 # app/main.py
-# VERSIÓN ESTABLE - CON MIDDLEWARE MULTI-EMPRESA
-# Incluye tags de publicaciones, notificaciones, configuración y empresas
+# VERSIÓN ACTUALIZADA - CON CLIENTES, EMPRESAS Y JERARQUÍA COMPLETA
+# Soporte: super_admin → admin_cliente → admin_empresa → jefe_unidad → usuario
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -22,11 +22,11 @@ from app.database import (
 )
 from app.api import api_router
 
-# 🆕 MIDDLEWARE MULTI-EMPRESA
+# MIDDLEWARE MULTI-EMPRESA
 from app.core.middleware_empresa import EmpresaContextMiddleware
 
 # =====================================================
-# 📦 CONFIGURACIÓN DE LOGGING
+# CONFIGURACIÓN DE LOGGING
 # =====================================================
 
 logging.basicConfig(
@@ -37,7 +37,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # =====================================================
-# 🚀 CREACIÓN DE LA APLICACIÓN FASTAPI
+# CREACIÓN DE LA APLICACIÓN FASTAPI
 # =====================================================
 
 if settings.is_production:
@@ -52,13 +52,13 @@ else:
 app = FastAPI(
     title=settings.PROJECT_NAME,
     version=settings.VERSION,
-    description="API para el Sistema de Gestión del Hospital de Policía",
+    description="API para el Sistema de Gestión Multi-Empresa con jerarquía de roles",
     docs_url=docs_url,
     redoc_url=redoc_url,
     openapi_url=openapi_url,
     openapi_tags=[
         {"name": "Autenticación", "description": "Endpoints para autenticación y gestión de usuarios"},
-        {"name": "Personal", "description": "Gestión de personal policial"},
+        {"name": "Personal", "description": "Gestión de personal"},
         {"name": "Planificación", "description": "Planificación de turnos y horarios"},
         {"name": "Asistencia", "description": "Registro y control de asistencia"},
         {"name": "Descansos Médicos", "description": "Gestión de descansos médicos"},
@@ -66,21 +66,23 @@ app = FastAPI(
         {"name": "Solicitudes de Cambio", "description": "Solicitudes de cambio de turno"},
         {"name": "QR", "description": "Generación y validación de códigos QR"},
         {"name": "Configuración Mensual", "description": "Configuración de parámetros mensuales"},
-        {"name": "Publicaciones", "description": "Canal interno de comunicaciones - Publicaciones y anuncios"},
-        {"name": "Notificaciones", "description": "Centro de notificaciones y alertas del sistema"},
-        {"name": "Configuración", "description": "Configuración dinámica del sistema - Turnos, Reglas, Organigrama, Roles, Campos, Catálogos"},
-        {"name": "Empresas", "description": "Panel Super Admin - Gestión de empresas y suscripciones"},
+        {"name": "Publicaciones", "description": "Canal interno de comunicaciones"},
+        {"name": "Notificaciones", "description": "Centro de notificaciones y alertas"},
+        {"name": "Configuración", "description": "Configuración dinámica del sistema"},
+        {"name": "Clientes", "description": "Panel Super Admin - Gestión de clientes y organizaciones"},
+        {"name": "Empresas", "description": "Panel Super Admin / Admin Cliente - Gestión de empresas"},
+        {"name": "Sesiones", "description": "Gestión de sesiones, clases y eventos"},
         {"name": "Sistema", "description": "Endpoints de sistema y monitoreo"}
     ]
 )
 
 # =====================================================
-# 🆕 SERVIR ARCHIVOS ESTÁTICOS (LOGOS)
+# SERVIR ARCHIVOS ESTÁTICOS (LOGOS)
 # =====================================================
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
 # =====================================================
-# 🌐 CONFIGURACIÓN CORS - ESTABLE
+# CONFIGURACIÓN CORS
 # =====================================================
 
 ALLOWED_ORIGINS = [
@@ -109,7 +111,7 @@ app.add_middleware(
     allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH", "HEAD"],
-    allow_headers=["Content-Type", "Authorization", "X-Requested-With", "Accept", "X-Empresa-ID"],
+    allow_headers=["Content-Type", "Authorization", "X-Requested-With", "Accept", "X-Empresa-ID", "X-Cliente-ID"],
     expose_headers=["X-Process-Time"],
     max_age=86400,
 )
@@ -117,7 +119,7 @@ app.add_middleware(
 logger.info(f"✅ CORS configurado con {len(ALLOWED_ORIGINS)} orígenes")
 
 # =====================================================
-# 🚀 OTROS MIDDLEWARES
+# OTROS MIDDLEWARES
 # =====================================================
 
 app.add_middleware(
@@ -126,12 +128,12 @@ app.add_middleware(
     compresslevel=6
 )
 
-# 🆕 MIDDLEWARE MULTI-EMPRESA
+# MIDDLEWARE MULTI-EMPRESA
 app.add_middleware(EmpresaContextMiddleware)
 logger.info("✅ Middleware multi-empresa registrado")
 
 # =====================================================
-# 📊 MIDDLEWARE DE MONITOREO
+# MIDDLEWARE DE MONITOREO
 # =====================================================
 
 @app.middleware("http")
@@ -143,19 +145,23 @@ async def monitor_performance(request: Request, call_next):
     return response
 
 # =====================================================
-# 📡 REGISTRO DE ROUTERS
+# REGISTRO DE ROUTERS
 # =====================================================
 
 app.include_router(api_router, prefix=settings.API_V1_PREFIX)
 
+# Módulos cargados (para diagnóstico)
 modulos_existentes = [
     'auth', 'personal', 'planificacion', 'asistencia',
     'descansos_medicos', 'solicitudes_cambio', 'qr', 'configuracion_mensual',
-    'publicaciones', 'notificaciones', 'configuracion', 'empresas'
+    'publicaciones', 'notificaciones', 'configuracion',
+    'clientes',    # 🆕
+    'empresas',    # Actualizado
+    'sesiones'
 ]
 
 # =====================================================
-# 🔍 ENDPOINTS DE DIAGNÓSTICO
+# ENDPOINTS DE DIAGNÓSTICO
 # =====================================================
 
 @app.api_route("/", methods=["GET", "HEAD"], tags=["Sistema"], summary="Información del sistema")
@@ -165,6 +171,7 @@ async def root():
         "version": settings.VERSION,
         "environment": settings.ENVIRONMENT,
         "status": "operational",
+        "jerarquia_roles": ["super_admin", "admin_cliente", "admin_empresa", "jefe_unidad", "usuario", "visitante"],
         "timestamp": datetime.utcnow().isoformat()
     }
 
@@ -199,9 +206,18 @@ async def system_info():
         "name": settings.PROJECT_NAME,
         "version": settings.VERSION,
         "environment": settings.ENVIRONMENT,
+        "jerarquia": {
+            "roles": ["super_admin", "admin_cliente", "admin_empresa", "jefe_unidad", "usuario", "visitante"],
+            "estructura": "super_admin → clientes → empresas → unidades"
+        },
         "cors_origins": ALLOWED_ORIGINS,
+        "modulos": modulos_existentes,
         "timestamp": datetime.utcnow().isoformat()
     }
+
+# =====================================================
+# MANEJADORES DE ERRORES
+# =====================================================
 
 @app.exception_handler(404)
 async def custom_404_handler(request: Request, exc):
@@ -225,6 +241,10 @@ async def custom_500_handler(request: Request, exc):
         "timestamp": datetime.utcnow().isoformat()
     })
 
+# =====================================================
+# EVENTOS DE INICIO Y FIN
+# =====================================================
+
 @app.on_event("startup")
 async def startup_event():
     logger.info("=" * 60)
@@ -232,6 +252,7 @@ async def startup_event():
     logger.info(f"🔧 Modo: {settings.ENVIRONMENT.upper()}")
     logger.info(f"🌐 CORS orígenes: {len(ALLOWED_ORIGINS)}")
     logger.info(f"🏢 Middleware multi-empresa: ACTIVO")
+    logger.info(f"👥 Jerarquía: super_admin → admin_cliente → admin_empresa → jefe_unidad → usuario")
     logger.info("=" * 60)
     await startup_db_events()
     db_connected, _ = check_db_connection()

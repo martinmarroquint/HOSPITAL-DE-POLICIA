@@ -1,7 +1,8 @@
+# app/core/dependencies.py
 """
-DEPENDENCIAS MULTI-EMPRESA
-Autenticación, autorización y control de acceso por empresa_id y rol_global
-CORREGIDO: Super admin NO puede acceder a datos de empresas
+DEPENDENCIAS MULTI-EMPRESA CON JERARQUÍA DE ROLES
+Autenticación, autorización y control de acceso por empresa_id, cliente_id y rol_global
+Soporta: super_admin → admin_cliente → admin_empresa → jefe_unidad → usuario
 """
 
 from fastapi import Depends, HTTPException, status
@@ -28,7 +29,7 @@ async def get_current_user(
 ) -> Optional[Usuario]:
     """
     Obtiene el usuario actual desde el token JWT con soporte multi-empresa.
-    Sincroniza empresa_id y rol_global desde el token si es necesario.
+    Sincroniza empresa_id, cliente_id y rol_global desde el token si es necesario.
     """
     if not token:
         return None
@@ -57,7 +58,7 @@ async def get_current_user(
             detail="Usuario inactivo. Contacte al administrador."
         )
     
-    # Sincronizar empresa_id desde el token si es necesario
+    # Sincronizar empresa_id desde el token
     token_empresa_id = payload.get("empresa_id")
     if token_empresa_id and str(user.empresa_id) != token_empresa_id:
         try:
@@ -66,7 +67,16 @@ async def get_current_user(
         except (ValueError, TypeError):
             pass
     
-    # Sincronizar rol_global desde el token si es necesario
+    # Sincronizar cliente_id desde el token
+    token_cliente_id = payload.get("cliente_id")
+    if token_cliente_id and str(user.cliente_id) != token_cliente_id:
+        try:
+            user.cliente_id = UUID(token_cliente_id)
+            db.commit()
+        except (ValueError, TypeError):
+            pass
+    
+    # Sincronizar rol_global desde el token
     token_rol_global = payload.get("rol_global")
     if token_rol_global and user.rol_global != token_rol_global:
         user.rol_global = token_rol_global
@@ -93,7 +103,7 @@ async def get_current_active_user(
 
 
 # =====================================================
-# ROLES GLOBALES
+# DEPENDENCIAS POR ROL GLOBAL
 # =====================================================
 
 async def get_current_super_admin(
@@ -101,8 +111,7 @@ async def get_current_super_admin(
 ) -> Usuario:
     """
     Verifica que el usuario sea super_admin.
-    SOLO para dashboard de monitoreo multi-empresa.
-    NO puede acceder a datos de empresas especificas.
+    Acceso al panel global de monitoreo y gestión de clientes.
     """
     if current_user.rol_global != "super_admin":
         raise HTTPException(
@@ -112,23 +121,33 @@ async def get_current_super_admin(
     return current_user
 
 
+async def get_current_admin_cliente(
+    current_user: Usuario = Depends(get_current_active_user),
+) -> Usuario:
+    """
+    Verifica que el usuario sea admin_cliente o superior.
+    Acceso a gestión de empresas de su cliente.
+    """
+    if current_user.rol_global not in ["super_admin", "admin_cliente"]:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Acceso restringido. Se requiere rol admin_cliente o superior."
+        )
+    return current_user
+
+
 async def get_current_admin_empresa(
     current_user: Usuario = Depends(get_current_active_user),
 ) -> Usuario:
     """
-    Verifica que el usuario sea admin_empresa EXCLUSIVAMENTE.
-    El super_admin NO tiene acceso a datos de empresas.
-    Debe usar impersonation si necesita acceder.
+    Verifica que el usuario sea admin_empresa o superior.
+    Super admin y admin_cliente también tienen acceso.
     """
-    # Super admin NO puede acceder a datos de empresas
-    if current_user.rol_global == "super_admin":
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Super admin no tiene acceso a datos de empresas. "
-                   "Use el dashboard de monitoreo o active impersonation."
-        )
+    # Super admin y admin_cliente pueden acceder como admin_empresa
+    if current_user.rol_global in ["super_admin", "admin_cliente"]:
+        return current_user
     
-    # Debe ser admin_empresa o tener rol 'admin' interno
+    # admin_empresa o rol 'admin' interno
     roles = current_user.roles or []
     is_admin_global = current_user.rol_global == "admin_empresa"
     is_admin_interno = "admin" in [r.lower() for r in roles if isinstance(r, str)]
@@ -151,19 +170,14 @@ async def get_current_admin_empresa(
 def require_roles(required_roles: List[str]):
     """
     Verifica que el usuario tenga al menos uno de los roles internos requeridos.
-    El rol 'admin' tiene acceso automatico a todo.
-    El super_admin NO tiene acceso a endpoints de empresa.
+    Los roles admin (super_admin, admin_cliente, admin_empresa) tienen acceso automático.
     """
     async def role_checker(
         current_user: Usuario = Depends(get_current_active_user),
     ) -> Usuario:
-        # Si es super_admin, DENEGAR acceso a endpoints de empresa
-        if current_user.rol_global == "super_admin":
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Super admin no tiene acceso a esta funcion. "
-                       "Use el dashboard de monitoreo."
-            )
+        # Admins tienen acceso total
+        if current_user.rol_global in ["super_admin", "admin_cliente", "admin_empresa"]:
+            return current_user
         
         if not has_role(current_user.roles or [], required_roles):
             raise HTTPException(
@@ -177,7 +191,7 @@ def require_roles(required_roles: List[str]):
 def require_rol_global(allowed_roles: List[str]):
     """
     Verifica que el usuario tenga un rol global permitido.
-    super_admin SIEMPRE tiene acceso a endpoints de super_admin.
+    super_admin SIEMPRE tiene acceso.
     """
     async def rol_global_checker(
         current_user: Usuario = Depends(get_current_active_user),
@@ -191,14 +205,22 @@ def require_rol_global(allowed_roles: List[str]):
     return rol_global_checker
 
 
-# Dependencias predefinidas para roles comunes
+# =====================================================
+# DEPENDENCIAS PREDEFINIDAS
+# =====================================================
+
 require_admin = require_roles(["admin"])
 require_jefe_area = require_roles(["admin", "jefe_area"])
 require_oficial_permanencia = require_roles(["admin", "oficial_permanencia"])
 require_control_qr = require_roles(["admin", "control_qr", "oficial_permanencia"])
 require_super_admin = require_rol_global(["super_admin"])
-require_admin_empresa = require_rol_global(["admin_empresa"])
+require_admin_cliente = require_rol_global(["super_admin", "admin_cliente"])
+require_admin_empresa = require_rol_global(["super_admin", "admin_cliente", "admin_empresa"])
 
+
+# =====================================================
+# UTILITARIOS
+# =====================================================
 
 def get_current_user_id(
     current_user: Usuario = Depends(get_current_active_user)
@@ -221,6 +243,13 @@ def get_current_empresa_id(
     return current_user.empresa_id
 
 
+def get_current_cliente_id(
+    current_user: Usuario = Depends(get_current_active_user)
+) -> Optional[UUID]:
+    """Obtiene el ID del cliente del usuario actual"""
+    return current_user.cliente_id
+
+
 def get_current_user_info(
     current_user: Usuario = Depends(get_current_active_user)
 ) -> dict:
@@ -232,6 +261,7 @@ def get_current_user_info(
         "roles": current_user.roles,
         "personal_id": str(current_user.personal_id) if current_user.personal_id else None,
         "empresa_id": str(current_user.empresa_id) if current_user.empresa_id else None,
+        "cliente_id": str(current_user.cliente_id) if current_user.cliente_id else None,
         "rol_global": current_user.rol_global,
         "activo": current_user.activo
     }

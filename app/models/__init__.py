@@ -1,8 +1,10 @@
 # app/models/__init__.py
-# VERSIÓN ACTUALIZADA - CON MODELO DE EMPRESA Y CONFIGURACIÓN DINÁMICA
+# VERSIÓN ACTUALIZADA - CON CLIENTE, EMPRESA MEJORADA Y JERARQUÍA
 
 from app.models.usuario import Usuario
 from app.models.personal import Personal
+from app.models.empresa import Empresa
+from app.models.cliente import Cliente
 from app.models.planificacion import Planificacion
 from app.models.planificacion_borrador import PlanificacionBorrador
 from app.models.asistencia import Asistencia
@@ -16,10 +18,7 @@ from app.models.configuracion_mensual import ConfiguracionMensual
 from app.models.publicacion import Publicacion, PublicacionVista
 from app.models.notificacion import Notificacion
 
-# 🆕 MODELO DE EMPRESA (MULTI-TENANCY)
-from app.models.empresa import Empresa
-
-# 🆕 MODELOS DE CONFIGURACIÓN DINÁMICA
+# Configuración dinámica
 from app.models.configuracion import (
     ConfigTurno,
     ConfigRegla,
@@ -39,8 +38,9 @@ from app.models.configuracion import (
 )
 
 __all__ = [
-    # MULTI-TENANCY
+    # MULTI-TENANCY Y JERARQUÍA
     "Empresa",
+    "Cliente",
     
     # USUARIOS Y PERSONAL
     "Usuario",

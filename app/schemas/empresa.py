@@ -1,39 +1,63 @@
 # app/schemas/empresa.py
+# VERSIÓN ACTUALIZADA - CON SOPORTE PARA CLIENTES Y ADMIN_CLIENTE
+
 from pydantic import BaseModel, Field, EmailStr
 from typing import Optional, List, Dict, Any
-from datetime import datetime
+from datetime import datetime, date
 from uuid import UUID
 
 
 class EmpresaCreate(BaseModel):
-    """Schema para crear una nueva empresa"""
+    """Schema para crear una nueva empresa - solo nombre y password son obligatorios"""
     nombre: str = Field(..., min_length=3, max_length=200, description="Nombre completo de la empresa")
     nombre_corto: Optional[str] = Field(None, max_length=50, description="Nombre abreviado o siglas")
-    subdominio: str = Field(..., min_length=3, max_length=50, description="Identificador interno único")
-    dominio_email: Optional[str] = Field(None, max_length=255, description="Dominio de email corporativo")
-    email_contacto: str = Field(..., description="Email de contacto de la empresa")
-    admin_email: str = Field(..., description="Email para el usuario administrador")
+    
+    # Auto-generables (opcionales)
+    subdominio: Optional[str] = Field(None, min_length=3, max_length=50, description="Identificador interno único (auto-generado)")
+    dominio_email: Optional[str] = Field(None, max_length=255, description="Dominio de email corporativo (auto-generado)")
+    email_contacto: Optional[str] = Field(None, description="Email de contacto (auto-generado)")
+    admin_email: Optional[str] = Field(None, description="Email del administrador (auto-generado)")
+    
     admin_password: str = Field(..., min_length=8, description="Contraseña del administrador")
     plan: str = Field("basico", description="Plan: basico, profesional, enterprise")
     max_usuarios: int = Field(50, ge=1, description="Límite máximo de usuarios")
     ruc: Optional[str] = Field(None, max_length=20, description="RUC de la empresa")
     telefono: Optional[str] = Field(None, max_length=20, description="Teléfono de contacto")
     direccion: Optional[str] = Field(None, description="Dirección física")
+    
+    # Relación con cliente
+    cliente_id: Optional[UUID] = Field(None, description="ID del cliente al que pertenece la empresa")
+    
+    # Configuración visual
+    logo_url: Optional[str] = Field(None, description="URL del logo")
+    color_primario: Optional[str] = Field(None, max_length=20, description="Color primario")
+    color_secundario: Optional[str] = Field(None, max_length=20, description="Color secundario")
+    pie_pagina: Optional[str] = Field(None, max_length=255, description="Texto del pie de página")
 
 
 class EmpresaUpdate(BaseModel):
     """Schema para actualizar una empresa - todos los campos son opcionales"""
     nombre: Optional[str] = Field(None, min_length=3, max_length=200)
     nombre_corto: Optional[str] = Field(None, max_length=50)
+    subdominio: Optional[str] = Field(None, min_length=3, max_length=50)
     dominio_email: Optional[str] = Field(None, max_length=255)
     email_contacto: Optional[str] = None
+    admin_email: Optional[str] = None
     telefono: Optional[str] = Field(None, max_length=20)
     direccion: Optional[str] = None
     ruc: Optional[str] = Field(None, max_length=20)
     activo: Optional[bool] = None
     plan: Optional[str] = None
     max_usuarios: Optional[int] = Field(None, ge=1)
-    fecha_vencimiento: Optional[datetime] = None
+    fecha_vencimiento: Optional[date] = None
+    cliente_id: Optional[UUID] = None
+    logo_url: Optional[str] = None
+    color_primario: Optional[str] = Field(None, max_length=20)
+    color_secundario: Optional[str] = Field(None, max_length=20)
+    color_fondo: Optional[str] = Field(None, max_length=20)
+    color_texto: Optional[str] = Field(None, max_length=20)
+    pie_pagina: Optional[str] = Field(None, max_length=255)
+    configuracion: Optional[Dict[str, Any]] = None
 
     class Config:
         from_attributes = True
@@ -59,13 +83,15 @@ class EmpresaResponse(BaseModel):
     completitud: Optional[float] = None
     vencida: Optional[bool] = None
     dias_restantes: Optional[int] = None
-    fecha_vencimiento: Optional[datetime] = None
+    fecha_vencimiento: Optional[date] = None
     created_at: Optional[datetime] = None
     ultimo_acceso: Optional[datetime] = None
     ultimo_acceso_email: Optional[str] = None
     logo_url: Optional[str] = None
     color_primario: Optional[str] = None
     admin_email: Optional[str] = None
+    cliente_id: Optional[UUID] = None
+    cliente_nombre: Optional[str] = None
 
     class Config:
         from_attributes = True
@@ -97,7 +123,7 @@ class EmpresaDetailResponse(BaseModel):
     # Vencimiento
     vencida: bool
     dias_restantes: Optional[int] = None
-    fecha_vencimiento: Optional[datetime] = None
+    fecha_vencimiento: Optional[date] = None
     
     # Fechas
     created_at: Optional[datetime] = None
@@ -111,9 +137,14 @@ class EmpresaDetailResponse(BaseModel):
     color_secundario: Optional[str] = None
     color_fondo: Optional[str] = None
     color_texto: Optional[str] = None
+    pie_pagina: Optional[str] = None
     
-    # Configuración y dominio
+    # Configuración
     configuracion: Optional[Dict[str, Any]] = None
+    
+    # Cliente
+    cliente_id: Optional[UUID] = None
+    cliente_nombre: Optional[str] = None
     
     # Admin
     admin: Optional[Dict[str, Any]] = None
@@ -123,7 +154,8 @@ class EmpresaDetailResponse(BaseModel):
 
 
 class EmpresaStatsResponse(BaseModel):
-    """Schema de estadísticas globales para el dashboard"""
+    """Schema de estadísticas globales para el dashboard del super_admin"""
+    total_clientes: Optional[int] = 0
     total_empresas: int
     empresas_activas: int
     empresas_suspendidas: int
@@ -136,3 +168,53 @@ class EmpresaStatsResponse(BaseModel):
     total_usuarios: int
     total_personal: Optional[int] = 0
     por_plan: Dict[str, int]
+
+
+class MisEmpresasResponse(BaseModel):
+    """Schema para el endpoint mis-empresas (admin_cliente)"""
+    empresas: List[Dict[str, Any]]
+
+
+class ClienteCreate(BaseModel):
+    """Schema para crear un nuevo cliente"""
+    nombre: str = Field(..., min_length=3, max_length=255, description="Nombre del cliente/organización")
+    razon_social: Optional[str] = Field(None, max_length=255, description="Razón social")
+    ruc: Optional[str] = Field(None, max_length=20, description="RUC del cliente")
+    email_contacto: Optional[str] = Field(None, description="Email de contacto")
+    telefono: Optional[str] = Field(None, max_length=50, description="Teléfono")
+    direccion: Optional[str] = Field(None, description="Dirección")
+    plan: str = Field("basico", description="Plan: basico, profesional, enterprise")
+    fecha_vencimiento: Optional[date] = None
+
+
+class ClienteUpdate(BaseModel):
+    """Schema para actualizar un cliente"""
+    nombre: Optional[str] = Field(None, min_length=3, max_length=255)
+    razon_social: Optional[str] = Field(None, max_length=255)
+    ruc: Optional[str] = Field(None, max_length=20)
+    email_contacto: Optional[str] = None
+    telefono: Optional[str] = Field(None, max_length=50)
+    direccion: Optional[str] = None
+    plan: Optional[str] = None
+    fecha_vencimiento: Optional[date] = None
+    activo: Optional[bool] = None
+
+
+class ClienteResponse(BaseModel):
+    """Schema de respuesta para clientes"""
+    id: UUID
+    nombre: str
+    razon_social: Optional[str] = None
+    ruc: Optional[str] = None
+    email_contacto: Optional[str] = None
+    telefono: Optional[str] = None
+    direccion: Optional[str] = None
+    plan: str
+    fecha_vencimiento: Optional[date] = None
+    activo: bool
+    total_empresas: Optional[int] = 0
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+
+    class Config:
+        from_attributes = True

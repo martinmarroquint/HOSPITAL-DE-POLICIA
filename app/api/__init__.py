@@ -1,5 +1,5 @@
 # app/api/__init__.py
-# VERSIÓN ACTUALIZADA - CON ROUTER DE SESIONES, EMPRESAS Y CONFIGURACIÓN DINÁMICA
+# VERSIÓN ACTUALIZADA - CON CLIENTES, EMPRESAS, SESIONES Y CONFIGURACIÓN DINÁMICA
 
 from fastapi import APIRouter
 from app.api import (
@@ -15,7 +15,8 @@ from app.api import (
     notificaciones,
     configuracion,  # Configuración dinámica
     empresas,        # Gestión de empresas (Panel Super Admin)
-    sesiones,        # 🆕 Gestión de sesiones, clases y eventos
+    clientes,        # 🆕 Gestión de clientes (Panel Super Admin)
+    sesiones,        # Gestión de sesiones, clases y eventos
 )
 
 api_router = APIRouter()
@@ -50,10 +51,13 @@ api_router.include_router(notificaciones.router, prefix="/notificaciones", tags=
 # Configuración dinámica
 api_router.include_router(configuracion.router, prefix="/config", tags=["Configuración"])
 
-# Gestión de Empresas (Panel Super Admin)
+# 🆕 Gestión de Clientes (Panel Super Admin)
+api_router.include_router(clientes.router, prefix="/clientes", tags=["Clientes"])
+
+# Gestión de Empresas (Panel Super Admin + Admin Cliente)
 api_router.include_router(empresas.router, prefix="/empresas", tags=["Empresas"])
 
-# 🆕 Sesiones y Clases (Check-in de visitantes)
+# Sesiones y Clases (Check-in de visitantes)
 api_router.include_router(sesiones.router, prefix="/sesiones", tags=["Sesiones"])
 
 # ⚠️ configuracion_mensual se incluye directamente en main.py
@@ -70,7 +74,8 @@ __all__ = [
     'publicaciones',
     'notificaciones',
     'configuracion',
+    'clientes',    # 🆕 NUEVO
     'empresas',
-    'sesiones',  # 🆕 NUEVO
+    'sesiones',
     'api_router'
 ]

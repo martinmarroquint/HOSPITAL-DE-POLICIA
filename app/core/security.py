@@ -1,6 +1,7 @@
 """
 CORE DE SEGURIDAD - ARGON2 EXCLUSIVO
 Sistema multi-empresa con JWT enriquecido
+Soporte para jerarquía: super_admin → admin_cliente → admin_empresa → usuario
 """
 
 from datetime import datetime, timedelta
@@ -8,6 +9,21 @@ from typing import Optional, List
 from jose import JWTError, jwt
 from passlib.context import CryptContext
 from app.config import settings
+
+# =====================================================
+# ROLES DEL SISTEMA (JERARQUÍA)
+# =====================================================
+ROLES_SISTEMA = [
+    'super_admin',       # Nivel 0: Dueño del sistema
+    'admin_cliente',     # Nivel 10: Dueño de la organización
+    'admin_empresa',     # Nivel 20: Administrador de empresa
+    'jefe_unidad',       # Nivel 30: Jefe de unidad/departamento
+    'usuario',           # Nivel 100: Usuario regular
+    'visitante',         # Nivel 110: Visitante temporal
+]
+
+ROLES_ADMIN = ['super_admin', 'admin_cliente', 'admin_empresa']
+ROLES_GESTION = ['admin_cliente', 'admin_empresa', 'jefe_unidad']
 
 # =====================================================
 # CONFIGURACIÓN ARGON2 EXCLUSIVO
@@ -64,8 +80,9 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -
               - user_id: UUID del usuario
               - personal_id: UUID del personal asociado
               - roles: lista de roles internos
-              - empresa_id: UUID de la empresa
-              - rol_global: super_admin, admin_empresa, usuario
+              - empresa_id: UUID de la empresa (puede ser null para admin_cliente)
+              - cliente_id: UUID del cliente (para admin_cliente)
+              - rol_global: super_admin, admin_cliente, admin_empresa, usuario, visitante
               - area: área del personal
               - username: nombre de usuario
         expires_delta: Tiempo de expiración personalizado (opcional)
@@ -117,7 +134,7 @@ def decode_token(token: str) -> Optional[dict]:
 def has_role(user_roles: List[str], required_roles: List[str]) -> bool:
     """
     Verifica si el usuario tiene alguno de los roles requeridos.
-    El rol 'admin' tiene acceso automático a todo.
+    Los roles admin (super_admin, admin_cliente, admin_empresa) tienen acceso a todo.
     
     Args:
         user_roles: Lista de roles del usuario
@@ -129,20 +146,26 @@ def has_role(user_roles: List[str], required_roles: List[str]) -> bool:
     if not user_roles:
         return False
     
-    # Admin tiene acceso total
-    if "admin" in [r.lower() for r in user_roles]:
+    user_roles_lower = [r.lower() for r in user_roles]
+    
+    # Admins tienen acceso total
+    if any(admin_role in user_roles_lower for admin_role in ['super_admin', 'admin_cliente', 'admin']):
         return True
     
     # Verificar si tiene alguno de los roles requeridos
     return any(
-        role.lower() in [r.lower() for r in user_roles] 
+        role.lower() in user_roles_lower 
         for role in required_roles
     )
 
 def has_rol_global(user_rol_global: str, allowed_roles: List[str]) -> bool:
     """
     Verifica si el usuario tiene un rol global permitido.
-    super_admin tiene acceso automático a todo.
+    Jerarquía de acceso:
+    - super_admin: acceso a TODO
+    - admin_cliente: acceso a sus empresas
+    - admin_empresa: acceso a su empresa
+    - usuario: acceso limitado
     
     Args:
         user_rol_global: Rol global del usuario
@@ -151,7 +174,101 @@ def has_rol_global(user_rol_global: str, allowed_roles: List[str]) -> bool:
     Returns:
         bool: True si el usuario tiene acceso
     """
+    if not user_rol_global:
+        return False
+    
+    # super_admin tiene acceso total
     if user_rol_global == "super_admin":
         return True
     
+    # admin_cliente tiene acceso a funciones de gestión
+    if user_rol_global == "admin_cliente" and any(r in allowed_roles for r in ROLES_ADMIN + ROLES_GESTION):
+        return True
+    
+    # Verificar rol específico
     return user_rol_global in allowed_roles
+
+def is_admin(user_rol_global: str) -> bool:
+    """
+    Verifica si el usuario tiene rol de administrador (cualquier nivel)
+    
+    Args:
+        user_rol_global: Rol global del usuario
+    
+    Returns:
+        bool: True si es super_admin, admin_cliente o admin_empresa
+    """
+    return user_rol_global in ROLES_ADMIN
+
+def is_super_admin(user_rol_global: str) -> bool:
+    """
+    Verifica si el usuario es super_admin
+    
+    Args:
+        user_rol_global: Rol global del usuario
+    
+    Returns:
+        bool: True si es super_admin
+    """
+    return user_rol_global == "super_admin"
+
+def is_admin_cliente(user_rol_global: str) -> bool:
+    """
+    Verifica si el usuario es admin_cliente
+    
+    Args:
+        user_rol_global: Rol global del usuario
+    
+    Returns:
+        bool: True si es admin_cliente
+    """
+    return user_rol_global == "admin_cliente"
+
+def is_admin_empresa(user_rol_global: str) -> bool:
+    """
+    Verifica si el usuario es admin_empresa
+    
+    Args:
+        user_rol_global: Rol global del usuario
+    
+    Returns:
+        bool: True si es admin_empresa
+    """
+    return user_rol_global == "admin_empresa"
+
+def get_role_level(user_rol_global: str) -> int:
+    """
+    Retorna el nivel jerárquico del rol
+    
+    Args:
+        user_rol_global: Rol global del usuario
+    
+    Returns:
+        int: Nivel jerárquico (menor = más poder)
+    """
+    niveles = {
+        'super_admin': 0,
+        'admin_cliente': 10,
+        'admin_empresa': 20,
+        'jefe_unidad': 30,
+        'usuario': 100,
+        'visitante': 110,
+    }
+    return niveles.get(user_rol_global, 999)
+
+def can_manage_role(user_rol_global: str, target_rol_global: str) -> bool:
+    """
+    Verifica si un usuario puede gestionar a otro basado en su rol
+    
+    Args:
+        user_rol_global: Rol del usuario que intenta gestionar
+        target_rol_global: Rol del usuario a gestionar
+    
+    Returns:
+        bool: True si puede gestionarlo
+    """
+    user_level = get_role_level(user_rol_global)
+    target_level = get_role_level(target_rol_global)
+    
+    # Solo puede gestionar roles de nivel inferior
+    return user_level < target_level

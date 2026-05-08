@@ -1,19 +1,20 @@
-# api/empresas.py
-# PANEL SUPER ADMIN - GESTIÓN DE EMPRESAS
-# Solo accesible por super_admin
+# app/api/empresas.py
+# GESTIÓN DE EMPRESAS - SUPER ADMIN + ADMIN CLIENTE
+# Soporte para jerarquía: super_admin → admin_cliente → admin_empresa
 
 from fastapi import APIRouter, Depends, HTTPException, status, Body, Query
 from sqlalchemy.orm import Session
 from typing import List, Optional
 from uuid import UUID
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, date
 
 from app.database import get_db
 from app.core.dependencies import get_current_super_admin, get_current_active_user
 from app.models.empresa import Empresa
 from app.models.usuario import Usuario
 from app.models.personal import Personal
-from app.core.security import get_password_hash
+from app.models.cliente import Cliente
+from app.core.security import get_password_hash, is_admin, is_super_admin, is_admin_cliente
 from app.schemas.empresa import EmpresaCreate, EmpresaUpdate, EmpresaResponse, EmpresaStatsResponse
 
 router = APIRouter()
@@ -24,15 +25,33 @@ def ahora_utc():
     return datetime.now(timezone.utc)
 
 
+def generar_subdominio(nombre: str) -> str:
+    """Genera un subdominio limpio a partir del nombre de la empresa"""
+    import re
+    sub = nombre.lower().strip()
+    sub = sub.replace('á', 'a').replace('é', 'e').replace('í', 'i').replace('ó', 'o').replace('ú', 'u')
+    sub = sub.replace('ñ', 'n')
+    sub = re.sub(r'[^a-z0-9\s-]', '', sub)
+    sub = re.sub(r'[\s_]+', '-', sub)
+    sub = re.sub(r'-+', '-', sub)
+    sub = sub.strip('-')
+    return sub[:50] or 'empresa'
+
+
+# =====================================================
+# ENDPOINTS PARA SUPER ADMIN
+# =====================================================
+
 @router.get("/")
 async def listar_empresas(
     activo: Optional[bool] = Query(None),
     plan: Optional[str] = Query(None),
     busqueda: Optional[str] = Query(None),
+    cliente_id: Optional[UUID] = Query(None),
     db: Session = Depends(get_db),
     current_user: Usuario = Depends(get_current_super_admin)
 ):
-    """Lista todas las empresas con métricas en tiempo real."""
+    """Lista todas las empresas con métricas en tiempo real (solo super_admin)."""
     query = db.query(Empresa)
     
     if activo is not None:
@@ -49,9 +68,10 @@ async def listar_empresas(
                 Empresa.nombre_corto.ilike(patron)
             )
         )
+    if cliente_id:
+        query = query.filter(Empresa.cliente_id == cliente_id)
     
     empresas = query.order_by(Empresa.created_at.desc()).all()
-    
     ahora = ahora_utc()
     
     result = []
@@ -78,14 +98,15 @@ async def listar_empresas(
         vencida = False
         dias_restantes = None
         if empresa.fecha_vencimiento:
-            if empresa.fecha_vencimiento.tzinfo is None:
-                vencida = empresa.fecha_vencimiento.replace(tzinfo=timezone.utc) < ahora
-            else:
-                vencida = empresa.fecha_vencimiento < ahora
+            fecha_venc = empresa.fecha_vencimiento
+            if isinstance(fecha_venc, date):
+                fecha_venc = datetime.combine(fecha_venc, datetime.min.time()).replace(tzinfo=timezone.utc)
+            vencida = fecha_venc < ahora
             if not vencida:
-                dias_restantes = (empresa.fecha_vencimiento - ahora).days
+                dias_restantes = (fecha_venc - ahora).days
         
         admin = db.query(Usuario).filter(Usuario.id == empresa.admin_id).first()
+        cliente = db.query(Cliente).filter(Cliente.id == empresa.cliente_id).first()
         
         result.append({
             "id": str(empresa.id),
@@ -112,7 +133,9 @@ async def listar_empresas(
             "ultimo_acceso_email": ultimo.email if ultimo else None,
             "color_primario": empresa.color_primario,
             "logo_url": empresa.logo_url,
-            "admin_email": admin.email if admin else None
+            "admin_email": admin.email if admin else None,
+            "cliente_id": str(empresa.cliente_id) if empresa.cliente_id else None,
+            "cliente_nombre": cliente.nombre if cliente else None,
         })
     
     return result
@@ -124,36 +147,45 @@ async def crear_empresa(
     db: Session = Depends(get_db),
     current_user: Usuario = Depends(get_current_super_admin)
 ):
-    """Crea una nueva empresa con su administrador."""
-    if db.query(Empresa).filter(Empresa.subdominio == data.subdominio).first():
-        raise HTTPException(status_code=400, detail="Subdominio ya registrado")
-    if db.query(Usuario).filter(Usuario.email == data.admin_email).first():
-        raise HTTPException(status_code=400, detail="Email de administrador ya registrado")
+    """
+    Crea una nueva empresa con su administrador (solo super_admin).
+    """
+    subdominio = data.subdominio or generar_subdominio(data.nombre)
+    dominio_email = data.dominio_email or f"{subdominio}.com"
+    email_contacto = data.email_contacto or f"admin@{dominio_email}"
+    admin_email = data.admin_email or f"admin@{dominio_email}"
     
-    fecha_prueba = ahora_utc() + timedelta(days=30)
+    if db.query(Empresa).filter(Empresa.subdominio == subdominio).first():
+        raise HTTPException(status_code=400, detail=f"El subdominio '{subdominio}' ya está registrado")
     
-    # 1. Crear empresa primero (sin admin_id)
+    if db.query(Usuario).filter(Usuario.email == admin_email).first():
+        raise HTTPException(status_code=400, detail=f"El email '{admin_email}' ya está registrado")
+    
+    fecha_prueba = (ahora_utc() + timedelta(days=30)).date()
+    
+    # Crear empresa
     empresa = Empresa(
         nombre=data.nombre,
         nombre_corto=data.nombre_corto or (data.nombre.split()[0] if data.nombre else None),
-        subdominio=data.subdominio,
-        dominio_email=data.dominio_email,
-        email_contacto=data.email_contacto,
+        subdominio=subdominio,
+        dominio_email=dominio_email,
+        email_contacto=email_contacto,
         plan=data.plan,
         max_usuarios=data.max_usuarios,
         ruc=data.ruc,
         telefono=data.telefono,
         direccion=data.direccion,
         activo=True,
-        fecha_vencimiento=fecha_prueba
+        fecha_vencimiento=fecha_prueba,
+        cliente_id=data.cliente_id,
     )
     db.add(empresa)
-    db.flush()  # Now empresa.id exists
+    db.flush()
     
-    # 2. Crear admin
+    # Crear admin
     admin_usuario = Usuario(
-        email=data.admin_email,
-        username=data.admin_email.split('@')[0],
+        email=admin_email,
+        username=admin_email,
         password_hash=get_password_hash(data.admin_password),
         empresa_id=empresa.id,
         rol_global="admin_empresa",
@@ -161,9 +193,8 @@ async def crear_empresa(
         activo=True
     )
     db.add(admin_usuario)
-    db.flush()  # Now admin_usuario.id exists
+    db.flush()
     
-    # 3. Assign admin_id to empresa
     empresa.admin_id = admin_usuario.id
     db.commit()
     db.refresh(empresa)
@@ -174,7 +205,8 @@ async def crear_empresa(
         "nombre": empresa.nombre,
         "subdominio": empresa.subdominio,
         "dominio_email": empresa.dominio_email,
-        "admin_email": data.admin_email,
+        "email_contacto": empresa.email_contacto,
+        "admin_email": admin_email,
         "plan": empresa.plan,
         "fecha_vencimiento": empresa.fecha_vencimiento.isoformat() if empresa.fecha_vencimiento else None,
         "dias_prueba": 30
@@ -192,11 +224,12 @@ async def estadisticas_globales(
     
     total_empresas = db.query(Empresa).count()
     empresas_activas = db.query(Empresa).filter(Empresa.activo == True).count()
+    total_clientes = db.query(Cliente).filter(Cliente.activo == True).count()
     
     por_vencer_7 = db.query(Empresa).filter(
         Empresa.activo == True,
-        Empresa.fecha_vencimiento >= ahora,
-        Empresa.fecha_vencimiento <= en_7_dias
+        Empresa.fecha_vencimiento >= ahora.date(),
+        Empresa.fecha_vencimiento <= en_7_dias.date()
     ).count()
     
     total_usuarios = db.query(Usuario).filter(Usuario.activo == True).count()
@@ -211,6 +244,7 @@ async def estadisticas_globales(
     nuevas_este_mes = db.query(Empresa).filter(Empresa.created_at >= inicio_mes).count()
     
     return {
+        "total_clientes": total_clientes,
         "total_empresas": total_empresas,
         "empresas_activas": empresas_activas,
         "empresas_suspendidas": total_empresas - empresas_activas,
@@ -223,16 +257,74 @@ async def estadisticas_globales(
     }
 
 
+# =====================================================
+# ENDPOINTS PARA ADMIN CLIENTE (Mis Empresas)
+# =====================================================
+
+@router.get("/mis-empresas/")
+async def mis_empresas(
+    db: Session = Depends(get_db),
+    current_user: Usuario = Depends(get_current_active_user)
+):
+    """
+    Retorna las empresas asignadas al usuario actual.
+    - super_admin: ve todas
+    - admin_cliente: ve las de su cliente
+    - admin_empresa/usuario: ve solo su empresa
+    """
+    
+    if is_super_admin(current_user.rol_global):
+        empresas = db.query(Empresa).filter(Empresa.activo == True).all()
+    elif is_admin_cliente(current_user.rol_global) and current_user.cliente_id:
+        empresas = db.query(Empresa).filter(
+            Empresa.cliente_id == current_user.cliente_id,
+            Empresa.activo == True
+        ).all()
+    else:
+        empresas = db.query(Empresa).filter(
+            Empresa.id == current_user.empresa_id,
+            Empresa.activo == True
+        ).all()
+    
+    return {
+        "empresas": [
+            {
+                "id": str(e.id),
+                "nombre": e.nombre,
+                "nombre_corto": e.nombre_corto,
+                "subdominio": e.subdominio,
+                "plan": e.plan,
+                "logo_url": e.logo_url,
+                "color_primario": e.color_primario,
+                "rol_en_empresa": current_user.rol_global
+            }
+            for e in empresas
+        ]
+    }
+
+
+# =====================================================
+# ENDPOINTS COMUNES
+# =====================================================
+
 @router.get("/{empresa_id}")
 async def obtener_empresa(
     empresa_id: UUID,
     db: Session = Depends(get_db),
-    current_user: Usuario = Depends(get_current_super_admin)
+    current_user: Usuario = Depends(get_current_active_user)
 ):
     """Obtiene detalle completo de una empresa"""
     empresa = db.query(Empresa).filter(Empresa.id == empresa_id).first()
     if not empresa:
         raise HTTPException(status_code=404, detail="Empresa no encontrada")
+    
+    # Verificar acceso
+    if not is_super_admin(current_user.rol_global):
+        if is_admin_cliente(current_user.rol_global):
+            if empresa.cliente_id != current_user.cliente_id:
+                raise HTTPException(status_code=403, detail="No tienes acceso a esta empresa")
+        elif empresa.id != current_user.empresa_id:
+            raise HTTPException(status_code=403, detail="No tienes acceso a esta empresa")
     
     ahora = ahora_utc()
     
@@ -247,16 +339,7 @@ async def obtener_empresa(
     ).order_by(Usuario.ultimo_acceso.desc()).first()
     
     admin = db.query(Usuario).filter(Usuario.id == empresa.admin_id).first()
-    
-    vencida = False
-    dias_restantes = None
-    if empresa.fecha_vencimiento:
-        if empresa.fecha_vencimiento.tzinfo is None:
-            vencida = empresa.fecha_vencimiento.replace(tzinfo=timezone.utc) < ahora
-        else:
-            vencida = empresa.fecha_vencimiento < ahora
-        if not vencida:
-            dias_restantes = (empresa.fecha_vencimiento - ahora).days
+    cliente = db.query(Cliente).filter(Cliente.id == empresa.cliente_id).first()
     
     return {
         "id": str(empresa.id),
@@ -277,8 +360,6 @@ async def obtener_empresa(
         "personal_inactivo": total_personal - personal_activo,
         "areas_configuradas": areas,
         "completitud": completitud,
-        "vencida": vencida,
-        "dias_restantes": dias_restantes,
         "fecha_vencimiento": empresa.fecha_vencimiento.isoformat() if empresa.fecha_vencimiento else None,
         "created_at": empresa.created_at.isoformat() if empresa.created_at else None,
         "updated_at": empresa.updated_at.isoformat() if empresa.updated_at else None,
@@ -290,6 +371,8 @@ async def obtener_empresa(
         "color_fondo": empresa.color_fondo,
         "color_texto": empresa.color_texto,
         "configuracion": empresa.configuracion,
+        "cliente_id": str(empresa.cliente_id) if empresa.cliente_id else None,
+        "cliente_nombre": cliente.nombre if cliente else None,
         "admin": {
             "id": str(admin.id) if admin else None,
             "email": admin.email if admin else None,
@@ -305,12 +388,16 @@ async def actualizar_empresa(
     empresa_id: UUID,
     data: EmpresaUpdate,
     db: Session = Depends(get_db),
-    current_user: Usuario = Depends(get_current_super_admin)
+    current_user: Usuario = Depends(get_current_active_user)
 ):
     """Actualiza datos de una empresa"""
     empresa = db.query(Empresa).filter(Empresa.id == empresa_id).first()
     if not empresa:
         raise HTTPException(status_code=404, detail="Empresa no encontrada")
+    
+    # Solo super_admin y admin_cliente pueden actualizar
+    if not is_admin(current_user.rol_global):
+        raise HTTPException(status_code=403, detail="No tienes permisos para actualizar empresas")
     
     update_data = data.model_dump(exclude_unset=True)
     for field, value in update_data.items():
@@ -337,7 +424,7 @@ async def toggle_estado_empresa(
     db: Session = Depends(get_db),
     current_user: Usuario = Depends(get_current_super_admin)
 ):
-    """Activa o desactiva una empresa"""
+    """Activa o desactiva una empresa (solo super_admin)"""
     empresa = db.query(Empresa).filter(Empresa.id == empresa_id).first()
     if not empresa:
         raise HTTPException(status_code=404, detail="Empresa no encontrada")
@@ -360,12 +447,12 @@ async def renovar_empresa(
     db: Session = Depends(get_db),
     current_user: Usuario = Depends(get_current_super_admin)
 ):
-    """Extiende la suscripción de una empresa por N días"""
+    """Extiende la suscripción de una empresa por N días (solo super_admin)"""
     empresa = db.query(Empresa).filter(Empresa.id == empresa_id).first()
     if not empresa:
         raise HTTPException(status_code=404, detail="Empresa no encontrada")
     
-    ahora = ahora_utc()
+    ahora = ahora_utc().date()
     
     if empresa.fecha_vencimiento and empresa.fecha_vencimiento < ahora:
         empresa.fecha_vencimiento = ahora + timedelta(days=dias)
@@ -375,7 +462,7 @@ async def renovar_empresa(
         empresa.fecha_vencimiento = ahora + timedelta(days=dias)
     
     empresa.activo = True
-    empresa.updated_at = ahora
+    empresa.updated_at = ahora_utc()
     db.commit()
     
     return {
