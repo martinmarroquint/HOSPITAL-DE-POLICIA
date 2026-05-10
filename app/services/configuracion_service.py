@@ -1,6 +1,8 @@
 """
 Servicio de Configuración Dinámica
 Lógica de negocio para la configuración del sistema
+CORREGIDO: guardar_niveles ahora actualiza sin borrar unidades asociadas
+           guardar_campos_personal convierte tipos a minúsculas
 """
 
 from sqlalchemy.orm import Session
@@ -131,21 +133,75 @@ class ConfiguracionService:
     # =====================================================
     
     def get_niveles(self) -> List[ConfigNivelJerarquico]:
+        """Obtiene todos los niveles jerárquicos activos"""
         return self.db.query(ConfigNivelJerarquico).filter(
             ConfigNivelJerarquico.activo == True
         ).order_by(ConfigNivelJerarquico.orden).all()
     
     def guardar_niveles(self, niveles_data: List[Dict[str, Any]]) -> List[ConfigNivelJerarquico]:
-        self.db.query(ConfigNivelJerarquico).delete()
-        
+        """
+        Guarda los niveles jerárquicos.
+        - Si el nivel tiene ID, lo actualiza
+        - Si no tiene ID, lo crea nuevo
+        - NO elimina niveles que tengan unidades asociadas
+        """
         creados = []
+        ids_procesados = []
+        
         for data in niveles_data:
-            nivel = ConfigNivelJerarquico(**data)
-            self.db.add(nivel)
-            creados.append(nivel)
+            nivel_id = data.get('id')
+            
+            if nivel_id:
+                try:
+                    nivel_id_uuid = UUID(str(nivel_id))
+                    nivel = self.db.query(ConfigNivelJerarquico).filter(
+                        ConfigNivelJerarquico.id == nivel_id_uuid
+                    ).first()
+                    
+                    if nivel:
+                        for key, value in data.items():
+                            if hasattr(nivel, key) and key not in ['id', 'created_at', 'updated_at']:
+                                setattr(nivel, key, value)
+                        nivel.activo = True
+                        creados.append(nivel)
+                        ids_procesados.append(nivel_id_uuid)
+                        logger.info(f"Nivel actualizado: {nivel.nombre} (ID: {nivel_id})")
+                        continue
+                except (ValueError, AttributeError):
+                    pass
+            
+            data_copy = {k: v for k, v in data.items() if k not in ['id', 'created_at', 'updated_at']}
+            data_copy.setdefault('activo', True)
+            nuevo_nivel = ConfigNivelJerarquico(**data_copy)
+            self.db.add(nuevo_nivel)
+            self.db.flush()
+            creados.append(nuevo_nivel)
+            ids_procesados.append(nuevo_nivel.id)
+            logger.info(f"Nivel creado: {nuevo_nivel.nombre}")
+        
+        niveles_existentes = self.db.query(ConfigNivelJerarquico).filter(
+            ConfigNivelJerarquico.activo == True
+        ).all()
+        
+        for nivel_existente in niveles_existentes:
+            if nivel_existente.id not in ids_procesados:
+                unidades_count = self.db.query(ConfigUnidad).filter(
+                    ConfigUnidad.nivel_id == nivel_existente.id,
+                    ConfigUnidad.activo == True
+                ).count()
+                
+                if unidades_count == 0:
+                    self.db.delete(nivel_existente)
+                    logger.info(f"Nivel eliminado: {nivel_existente.nombre} (sin unidades)")
+                else:
+                    nivel_existente.activo = False
+                    logger.warning(
+                        f"Nivel '{nivel_existente.nombre}' marcado como inactivo: "
+                        f"tiene {unidades_count} unidades asociadas"
+                    )
         
         self.db.commit()
-        logger.info(f"{len(creados)} niveles jerarquicos guardados")
+        logger.info(f"Total niveles guardados: {len(creados)}")
         return creados
     
     # =====================================================
@@ -153,17 +209,20 @@ class ConfiguracionService:
     # =====================================================
     
     def get_unidades(self) -> List[ConfigUnidad]:
+        """Obtiene todas las unidades activas"""
         return self.db.query(ConfigUnidad).filter(
             ConfigUnidad.activo == True
         ).order_by(ConfigUnidad.orden).all()
     
     def get_organigrama(self) -> Dict[str, Any]:
+        """Obtiene el organigrama completo (niveles + unidades)"""
         return {
             "niveles": [n.to_dict() for n in self.get_niveles()],
             "unidades": [u.to_dict() for u in self.get_unidades()]
         }
     
     def crear_unidad(self, data: Dict[str, Any]) -> ConfigUnidad:
+        """Crea una nueva unidad organizacional"""
         unidad = ConfigUnidad(**data)
         self.db.add(unidad)
         self.db.commit()
@@ -172,6 +231,7 @@ class ConfiguracionService:
         return unidad
     
     def actualizar_unidad(self, unidad_id: UUID, data: Dict[str, Any]) -> ConfigUnidad:
+        """Actualiza una unidad existente"""
         unidad = self.db.query(ConfigUnidad).filter(ConfigUnidad.id == unidad_id).first()
         if not unidad:
             raise ValueError(f"Unidad {unidad_id} no encontrada")
@@ -186,6 +246,7 @@ class ConfiguracionService:
         return unidad
     
     def eliminar_unidad(self, unidad_id: UUID) -> bool:
+        """Elimina una unidad y desactiva sus hijas"""
         unidad = self.db.query(ConfigUnidad).filter(ConfigUnidad.id == unidad_id).first()
         if not unidad:
             raise ValueError(f"Unidad {unidad_id} no encontrada")
@@ -193,6 +254,7 @@ class ConfiguracionService:
         hijas = self.db.query(ConfigUnidad).filter(ConfigUnidad.padre_id == unidad_id).all()
         for hija in hijas:
             hija.activo = False
+            logger.info(f"Unidad hija desactivada: {hija.nombre}")
         
         self.db.delete(unidad)
         self.db.commit()
@@ -204,11 +266,13 @@ class ConfiguracionService:
     # =====================================================
     
     def get_roles(self) -> List[ConfigRol]:
+        """Obtiene todos los roles activos"""
         return self.db.query(ConfigRol).filter(
             ConfigRol.activo == True
         ).order_by(ConfigRol.nivel.desc()).all()
     
     def crear_rol(self, data: Dict[str, Any]) -> ConfigRol:
+        """Crea un nuevo rol"""
         rol = ConfigRol(**data)
         self.db.add(rol)
         self.db.commit()
@@ -217,6 +281,7 @@ class ConfiguracionService:
         return rol
     
     def actualizar_rol(self, rol_id: UUID, data: Dict[str, Any]) -> ConfigRol:
+        """Actualiza un rol existente"""
         rol = self.db.query(ConfigRol).filter(ConfigRol.id == rol_id).first()
         if not rol:
             raise ValueError(f"Rol {rol_id} no encontrado")
@@ -231,6 +296,7 @@ class ConfiguracionService:
         return rol
     
     def eliminar_rol(self, rol_id: UUID) -> bool:
+        """Elimina un rol (no permite eliminar roles del sistema)"""
         rol = self.db.query(ConfigRol).filter(ConfigRol.id == rol_id).first()
         if not rol:
             raise ValueError(f"Rol {rol_id} no encontrado")
@@ -243,7 +309,7 @@ class ConfiguracionService:
         return True
     
     # =====================================================
-    # CAMPOS DEL PERSONAL
+    # CAMPOS DEL PERSONAL (CORREGIDO - CONVERSIÓN A MINÚSCULAS)
     # =====================================================
     
     def get_campos_personal(self, empresa_id: Optional[UUID] = None) -> List[ConfigCampoPersonal]:
@@ -268,6 +334,10 @@ class ConfiguracionService:
         for data in campos_data:
             campo_id = data.get("campo_id")
             
+            # 🎯 CORRECCIÓN: Convertir tipo a minúsculas para cumplir con CHECK constraint
+            if data.get("tipo"):
+                data["tipo"] = data["tipo"].lower()
+            
             # Buscar existente
             existente_query = self.db.query(ConfigCampoPersonal).filter(
                 ConfigCampoPersonal.campo_id == campo_id
@@ -280,12 +350,14 @@ class ConfiguracionService:
             existente = existente_query.first()
             
             if existente:
+                # Si ya existe, actualizar sus campos
                 for key, value in data.items():
                     if hasattr(existente, key) and key not in ['id', 'empresa_id', 'created_at']:
                         setattr(existente, key, value)
                 existente.empresa_id = empresa_id
                 creados.append(existente)
             else:
+                # Si no existe, crear nuevo
                 data_copy = {k: v for k, v in data.items() if k not in ['id', 'created_at']}
                 data_copy['empresa_id'] = empresa_id
                 campo = ConfigCampoPersonal(**data_copy)
@@ -301,22 +373,27 @@ class ConfiguracionService:
     # =====================================================
     
     def get_catalogos(self, tipo: Optional[str] = None) -> List[ConfigCatalogo]:
+        """Obtiene catálogos, opcionalmente filtrados por tipo"""
         query = self.db.query(ConfigCatalogo).filter(ConfigCatalogo.activo == True)
         if tipo:
             query = query.filter(ConfigCatalogo.tipo == tipo)
         return query.order_by(ConfigCatalogo.orden).all()
     
     def crear_catalogo(self, data: Dict[str, Any]) -> ConfigCatalogo:
+        """Crea una nueva entrada de catálogo"""
         catalogo = ConfigCatalogo(**data)
         self.db.add(catalogo)
         self.db.commit()
         self.db.refresh(catalogo)
+        logger.info(f"Catálogo creado: {catalogo.nombre} ({catalogo.tipo})")
         return catalogo
     
     def eliminar_catalogo(self, catalogo_id: UUID) -> bool:
+        """Elimina una entrada de catálogo"""
         catalogo = self.db.query(ConfigCatalogo).filter(ConfigCatalogo.id == catalogo_id).first()
         if not catalogo:
-            raise ValueError(f"Catalogo {catalogo_id} no encontrado")
+            raise ValueError(f"Catálogo {catalogo_id} no encontrado")
         self.db.delete(catalogo)
         self.db.commit()
+        logger.info(f"Catálogo eliminado: {catalogo.nombre}")
         return True

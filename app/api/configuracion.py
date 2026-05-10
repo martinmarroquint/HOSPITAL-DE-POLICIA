@@ -2,12 +2,12 @@
 API de Configuración Dinámica
 Endpoints para gestionar la configuración del sistema
 CADA EMPRESA TIENE SU PROPIA CONFIGURACIÓN
-CORREGIDO: GETs accesibles para cualquier usuario autenticado
+CORREGIDO: Conversión de tipos a minúsculas en guardar_campos_personal
 """
 
 from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File
 from sqlalchemy.orm import Session
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 from uuid import UUID, uuid4
 import os
 
@@ -89,6 +89,37 @@ def get_empresa_id_from_user(current_user: Usuario) -> Optional[UUID]:
 
 
 # =====================================================
+# VALOR POR DEFECTO PARA RESPUESTAS VACÍAS
+# =====================================================
+
+def empty_regla_response() -> Dict[str, Any]:
+    """Retorna un objeto de regla vacío válido"""
+    return {
+        "id": None,
+        "unidad_medida": "horas",
+        "periodicidad": "mensual",
+        "meta_tipo": "horas_minimas",
+        "meta_valor": 0,
+        "meta_factor": 1.0,
+        "meta_formula": None,
+        "minimo_cumplimiento": 0,
+        "minimo_tipo": "porcentaje",
+        "tope_maximo": None,
+        "redondeo_metodo": "ninguno",
+        "redondeo_valor": 0,
+        "francos_descuentan": False,
+        "max_francos_consecutivos": 0,
+        "exclusiones": [],
+        "alcance": "global",
+        "tolerancia_tardanza": 0,
+        "activo": True,
+        "created_at": None,
+        "updated_at": None,
+        "empresa_id": None,
+    }
+
+
+# =====================================================
 # ESTADO DE CONFIGURACIÓN
 # =====================================================
 
@@ -123,7 +154,7 @@ async def listar_turnos(
 async def crear_turno(
     turno: TurnoCreate,
     service: ConfiguracionService = Depends(get_config_service),
-    current_user: Usuario = Depends(require_roles(["admin"]))
+    current_user: Usuario = Depends(require_roles(["admin", "admin_empresa", "admin_cliente"]))
 ):
     """Crea un nuevo tipo de turno asignado a la empresa del usuario"""
     try:
@@ -141,7 +172,7 @@ async def actualizar_turno(
     turno_id: UUID,
     turno: TurnoUpdate,
     service: ConfiguracionService = Depends(get_config_service),
-    current_user: Usuario = Depends(require_roles(["admin"]))
+    current_user: Usuario = Depends(require_roles(["admin", "admin_empresa", "admin_cliente"]))
 ):
     """Actualiza un tipo de turno"""
     try:
@@ -156,7 +187,7 @@ async def actualizar_turno(
 async def eliminar_turno(
     turno_id: UUID,
     service: ConfiguracionService = Depends(get_config_service),
-    current_user: Usuario = Depends(require_roles(["admin"]))
+    current_user: Usuario = Depends(require_roles(["admin", "admin_empresa", "admin_cliente"]))
 ):
     """Elimina un tipo de turno"""
     try:
@@ -172,7 +203,7 @@ async def eliminar_turno(
 async def crear_turnos_masivo(
     data: dict,
     service: ConfiguracionService = Depends(get_config_service),
-    current_user: Usuario = Depends(require_roles(["admin"]))
+    current_user: Usuario = Depends(require_roles(["admin", "admin_empresa", "admin_cliente"]))
 ):
     """Crea múltiples turnos a la vez"""
     turnos_data = data.get("turnos", [])
@@ -185,33 +216,39 @@ async def crear_turnos_masivo(
 
 
 # =====================================================
-# REGLAS
+# REGLAS - CORREGIDO: Maneja caso vacío
 # =====================================================
 
-@router.get("/reglas", response_model=ReglaResponse, tags=["Configuración"])
+@router.get("/reglas", tags=["Configuración"])
 async def get_reglas(
     service: ConfiguracionService = Depends(get_config_service),
     current_user: Usuario = Depends(get_current_active_user)
 ):
-    """Obtiene las reglas de cumplimiento"""
-    reglas = service.get_reglas()
-    if not reglas:
-        return {}
-    return reglas.to_dict()
+    """Obtiene las reglas de cumplimiento. Retorna objeto vacío si no hay reglas."""
+    try:
+        reglas = service.get_reglas()
+        if not reglas:
+            return empty_regla_response()
+        return reglas.to_dict()
+    except Exception as e:
+        return empty_regla_response()
 
 
-@router.put("/reglas", response_model=ReglaResponse, tags=["Configuración"])
+@router.put("/reglas", tags=["Configuración"])
 async def guardar_reglas(
     reglas: ReglaCreate,
     service: ConfiguracionService = Depends(get_config_service),
-    current_user: Usuario = Depends(require_roles(["admin"]))
+    current_user: Usuario = Depends(require_roles(["admin", "admin_empresa", "admin_cliente"]))
 ):
     """Guarda o actualiza las reglas de cumplimiento"""
     reglas_data = reglas.model_dump()
     empresa_id = get_empresa_id_from_user(current_user)
     if empresa_id:
         reglas_data['empresa_id'] = str(empresa_id)
-    return service.guardar_reglas(reglas_data).to_dict()
+    try:
+        return service.guardar_reglas(reglas_data).to_dict()
+    except Exception as e:
+        return empty_regla_response()
 
 
 # =====================================================
@@ -231,7 +268,7 @@ async def get_organigrama(
 async def guardar_niveles(
     data: dict,
     service: ConfiguracionService = Depends(get_config_service),
-    current_user: Usuario = Depends(require_roles(["admin"]))
+    current_user: Usuario = Depends(require_roles(["admin", "admin_empresa", "admin_cliente"]))
 ):
     """Guarda los niveles jerárquicos"""
     niveles_data = data.get("niveles", [])
@@ -247,7 +284,7 @@ async def guardar_niveles(
 async def crear_unidad(
     unidad: UnidadCreate,
     service: ConfiguracionService = Depends(get_config_service),
-    current_user: Usuario = Depends(require_roles(["admin"]))
+    current_user: Usuario = Depends(require_roles(["admin", "admin_empresa", "admin_cliente"]))
 ):
     """Crea una unidad organizacional"""
     try:
@@ -265,7 +302,7 @@ async def actualizar_unidad(
     unidad_id: UUID,
     unidad: UnidadUpdate,
     service: ConfiguracionService = Depends(get_config_service),
-    current_user: Usuario = Depends(require_roles(["admin"]))
+    current_user: Usuario = Depends(require_roles(["admin", "admin_empresa", "admin_cliente"]))
 ):
     """Actualiza una unidad organizacional"""
     try:
@@ -278,7 +315,7 @@ async def actualizar_unidad(
 async def eliminar_unidad(
     unidad_id: UUID,
     service: ConfiguracionService = Depends(get_config_service),
-    current_user: Usuario = Depends(require_roles(["admin"]))
+    current_user: Usuario = Depends(require_roles(["admin", "admin_empresa", "admin_cliente"]))
 ):
     """Elimina una unidad organizacional"""
     try:
@@ -306,7 +343,7 @@ async def listar_roles(
 async def crear_rol(
     rol: RolCreate,
     service: ConfiguracionService = Depends(get_config_service),
-    current_user: Usuario = Depends(require_roles(["admin"]))
+    current_user: Usuario = Depends(require_roles(["admin", "admin_empresa", "admin_cliente"]))
 ):
     """Crea un nuevo rol"""
     try:
@@ -324,7 +361,7 @@ async def actualizar_rol(
     rol_id: UUID,
     rol: RolUpdate,
     service: ConfiguracionService = Depends(get_config_service),
-    current_user: Usuario = Depends(require_roles(["admin"]))
+    current_user: Usuario = Depends(require_roles(["admin", "admin_empresa", "admin_cliente"]))
 ):
     """Actualiza un rol"""
     try:
@@ -337,7 +374,7 @@ async def actualizar_rol(
 async def eliminar_rol(
     rol_id: UUID,
     service: ConfiguracionService = Depends(get_config_service),
-    current_user: Usuario = Depends(require_roles(["admin"]))
+    current_user: Usuario = Depends(require_roles(["admin", "admin_empresa", "admin_cliente"]))
 ):
     """Elimina un rol"""
     try:
@@ -366,14 +403,20 @@ async def get_campos_personal(
 async def guardar_campos_personal(
     data: CamposPersonalUpdateBulk,
     service: ConfiguracionService = Depends(get_config_service),
-    current_user: Usuario = Depends(require_roles(["admin"]))
+    current_user: Usuario = Depends(require_roles(["admin", "admin_empresa", "admin_cliente"]))
 ):
     """Guarda la configuración de campos del personal para la empresa del usuario"""
     empresa_id = get_empresa_id_from_user(current_user)
-    campos = service.guardar_campos_personal(
-        [c.model_dump() for c in data.campos], 
-        empresa_id
-    )
+    
+    # 🎯 CORRECCIÓN: Convertir tipos a minúsculas antes de guardar
+    campos_data = []
+    for c in data.campos:
+        campo_dict = c.model_dump()
+        if campo_dict.get('tipo'):
+            campo_dict['tipo'] = campo_dict['tipo'].lower()
+        campos_data.append(campo_dict)
+    
+    campos = service.guardar_campos_personal(campos_data, empresa_id)
     return {"success": True, "campos": len(campos)}
 
 
@@ -396,7 +439,7 @@ async def listar_catalogos(
 async def crear_catalogo(
     catalogo: CatalogoCreate,
     service: ConfiguracionService = Depends(get_config_service),
-    current_user: Usuario = Depends(require_roles(["admin"]))
+    current_user: Usuario = Depends(require_roles(["admin", "admin_empresa", "admin_cliente"]))
 ):
     """Crea una entrada de catálogo"""
     catalogo_data = catalogo.model_dump()
@@ -410,7 +453,7 @@ async def crear_catalogo(
 async def eliminar_catalogo(
     catalogo_id: UUID,
     service: ConfiguracionService = Depends(get_config_service),
-    current_user: Usuario = Depends(require_roles(["admin"]))
+    current_user: Usuario = Depends(require_roles(["admin", "admin_empresa", "admin_cliente"]))
 ):
     """Elimina una entrada de catálogo"""
     try:
@@ -429,11 +472,7 @@ async def get_config_cliente(
     db: Session = Depends(get_db),
     current_user: Optional[Usuario] = Depends(get_current_active_user)
 ):
-    """
-    Obtiene la configuración del cliente (nombre, logo, colores).
-    Si hay usuario autenticado, devuelve la config de SU empresa.
-    Si no hay usuario, devuelve la primera config (fallback).
-    """
+    """Obtiene la configuración del cliente"""
     if current_user and current_user.empresa_id:
         config = get_or_create_config_cliente(db, current_user.empresa_id)
     else:
@@ -451,9 +490,9 @@ async def get_config_cliente(
 async def update_config_cliente(
     data: ClienteConfigUpdate,
     db: Session = Depends(get_db),
-    current_user: Usuario = Depends(require_roles(["admin"]))
+    current_user: Usuario = Depends(require_roles(["admin", "admin_empresa", "admin_cliente"]))
 ):
-    """Actualiza la configuración del cliente. Solo administradores de la empresa."""
+    """Actualiza la configuración del cliente"""
     if not current_user.empresa_id:
         raise HTTPException(status_code=400, detail="Usuario sin empresa asignada")
     
@@ -468,14 +507,14 @@ async def update_config_cliente(
 
 
 # =====================================================
-# SUBIDA DE LOGO (POR EMPRESA)
+# SUBIDA DE LOGO
 # =====================================================
 
 @router.post("/cliente/logo", tags=["Configuración"])
 async def subir_logo_cliente(
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
-    current_user: Usuario = Depends(require_roles(["admin"]))
+    current_user: Usuario = Depends(require_roles(["admin", "admin_empresa", "admin_cliente"]))
 ):
     """Sube el logo de la organización"""
     if not current_user.empresa_id:
@@ -484,11 +523,11 @@ async def subir_logo_cliente(
     filename = file.filename or "logo.png"
     ext = filename.rsplit('.', 1)[-1].lower() if '.' in filename else ''
     if ext not in ['png', 'jpg', 'jpeg', 'svg']:
-        raise HTTPException(status_code=400, detail="Formato no permitido. Use PNG, JPG, JPEG o SVG.")
+        raise HTTPException(status_code=400, detail="Formato no permitido")
     
     contents = await file.read()
     if len(contents) > 2 * 1024 * 1024:
-        raise HTTPException(status_code=400, detail="El logo no debe superar los 2MB.")
+        raise HTTPException(status_code=400, detail="El logo no debe superar los 2MB")
     
     unique_filename = f"{uuid4().hex}_{filename}"
     filepath = os.path.join(UPLOAD_DIR, unique_filename)
@@ -514,16 +553,13 @@ async def subir_logo_cliente(
 @router.delete("/cliente/logo", tags=["Configuración"])
 async def eliminar_logo_cliente(
     db: Session = Depends(get_db),
-    current_user: Usuario = Depends(require_roles(["admin"]))
+    current_user: Usuario = Depends(require_roles(["admin", "admin_empresa", "admin_cliente"]))
 ):
     """Elimina el logo actual"""
     if not current_user.empresa_id:
         raise HTTPException(status_code=400, detail="Usuario sin empresa asignada")
     
-    config = db.query(ConfigCliente).filter(
-        ConfigCliente.empresa_id == current_user.empresa_id
-    ).first()
-    
+    config = db.query(ConfigCliente).filter(ConfigCliente.empresa_id == current_user.empresa_id).first()
     if not config or not config.logo_url:
         raise HTTPException(status_code=404, detail="No hay logo para eliminar")
     
@@ -534,18 +570,17 @@ async def eliminar_logo_cliente(
     
     config.logo_url = None
     db.commit()
-    
     return {"success": True, "message": "Logo eliminado"}
 
 
 # =====================================================
-# SEMILLA DE NIVELES POR DEFECTO
+# SEMILLA DE NIVELES
 # =====================================================
 
 @router.post("/organigrama/niveles/semilla", tags=["Configuración"])
 async def crear_niveles_semilla(
     service: ConfiguracionService = Depends(get_config_service),
-    current_user: Usuario = Depends(require_roles(["admin"]))
+    current_user: Usuario = Depends(require_roles(["admin", "admin_empresa", "admin_cliente"]))
 ):
     """Crea los niveles jerárquicos por defecto"""
     niveles_default = [
@@ -568,38 +603,27 @@ async def crear_niveles_semilla(
     
     try:
         niveles = service.guardar_niveles(niveles_default)
-        return {
-            "success": True,
-            "message": f"{len(niveles)} niveles creados correctamente",
-            "creados": len(niveles),
-            "niveles": [n.to_dict() for n in niveles]
-        }
+        return {"success": True, "message": f"{len(niveles)} niveles creados", "creados": len(niveles)}
     except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Error al crear niveles: {str(e)}")
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 # =====================================================
-# CONFIG PÚBLICA (SIN AUTENTICACIÓN)
+# CONFIG PÚBLICA
 # =====================================================
 
 @router.get("/cliente/publico", tags=["Configuración"])
 async def get_config_cliente_publico(
-    subdominio: str = Query("default", description="Subdominio de la empresa"),
+    subdominio: str = Query("default"),
     db: Session = Depends(get_db)
 ):
-    """
-    Endpoint PÚBLICO - Obtiene la configuración de una empresa por subdominio.
-    No requiere autenticación. Lo usa el login para mostrar logo y colores.
-    """
+    """Endpoint PÚBLICO - Configuración por subdominio"""
     empresa = db.query(Empresa).filter(Empresa.subdominio == subdominio).first()
-    
     if not empresa:
         empresa = db.query(Empresa).filter(Empresa.subdominio == "default").first()
     
     if empresa:
-        config = db.query(ConfigCliente).filter(
-            ConfigCliente.empresa_id == empresa.id
-        ).first()
+        config = db.query(ConfigCliente).filter(ConfigCliente.empresa_id == empresa.id).first()
         if config:
             return config.to_dict()
     

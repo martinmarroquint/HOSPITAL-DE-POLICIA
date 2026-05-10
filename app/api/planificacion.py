@@ -1,5 +1,5 @@
 # api/planificacion.py
-# VERSIÓN COMPLETA - CON SOPORTE MULTI-EMPRESA, hora_inicio Y hora_fin
+# VERSIÓN COMPLETA - CON SOPORTE MULTI-EMPRESA, hora_inicio, hora_fin Y CARGA MASIVA RÁPIDA
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from sqlalchemy.orm import Session, joinedload
@@ -192,7 +192,6 @@ async def obtener_planificacion_personal(
             if not personal or not jefe or personal.area != jefe.area:
                 raise HTTPException(status_code=403, detail="No puede ver personal de otra área")
         
-        # 🆕 Incluir hora_inicio y hora_fin
         query = db.query(
             Planificacion.fecha, Planificacion.turno_codigo,
             Planificacion.hora_inicio, Planificacion.hora_fin,
@@ -526,6 +525,114 @@ async def crear_turno(
     except Exception as e:
         logger.error(f"❌ Error en crear_turno: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error interno del servidor: {str(e)}")
+
+# =====================================================
+# 🚀 NUEVO: CARGA MASIVA ULTRARRÁPIDA
+# =====================================================
+
+@router.post("/carga-masiva")
+async def carga_masiva_turnos(
+    asignaciones: List[Dict[str, Any]],
+    db: Session = Depends(get_db),
+    current_user: Usuario = Depends(require_roles(["admin", "admin_empresa", "admin_cliente", "jefe_area"]))
+):
+    """
+    Carga masiva de turnos ultrarrápida.
+    Recibe una lista de asignaciones y las procesa en una sola transacción.
+    
+    Formato: [
+        {"personal_id": "uuid", "fecha": "2024-01-15", "turno_codigo": "M1"},
+        ...
+    ]
+    """
+    if not asignaciones:
+        raise HTTPException(status_code=400, detail="No se recibieron datos")
+    
+    try:
+        # Extraer todas las fechas y personal_ids únicos
+        fechas = list(set(a["fecha"] for a in asignaciones))
+        personal_ids = list(set(UUID(a["personal_id"]) for a in asignaciones))
+        
+        # 1. Obtener todos los registros existentes en UNA SOLA consulta
+        existentes = db.query(Planificacion).filter(
+            Planificacion.personal_id.in_(personal_ids),
+            Planificacion.fecha.in_(fechas)
+        ).all()
+        
+        # 2. Crear un mapa para búsqueda rápida O(1)
+        existentes_map = {}
+        for e in existentes:
+            key = (str(e.personal_id), e.fecha.isoformat())
+            existentes_map[key] = e
+        
+        # 3. Preparar lotes para inserción/actualización
+        creados = 0
+        actualizados = 0
+        nuevos_registros = []
+        meses_afectados = set()
+        
+        for asignacion in asignaciones:
+            personal_id = UUID(asignacion["personal_id"])
+            fecha_str = asignacion["fecha"]
+            turno_codigo = asignacion.get("turno_codigo")
+            
+            # Parsear fecha
+            fecha = date.fromisoformat(fecha_str)
+            meses_afectados.add((fecha.year, fecha.month))
+            
+            key = (str(personal_id), fecha_str)
+            
+            if key in existentes_map:
+                # Actualizar existente
+                existente = existentes_map[key]
+                existente.turno_codigo = turno_codigo
+                existente.updated_at = datetime.utcnow()
+                existente.created_by = current_user.id
+                actualizados += 1
+            else:
+                # Nuevo registro
+                nuevos_registros.append({
+                    "personal_id": personal_id,
+                    "fecha": fecha,
+                    "turno_codigo": turno_codigo,
+                    "created_by": current_user.id
+                })
+                creados += 1
+        
+        # 4. Insertar todos los nuevos en UNA SOLA operación
+        if nuevos_registros:
+            # Usar inserción masiva nativa de SQLAlchemy
+            db.execute(
+                Planificacion.__table__.insert(),
+                nuevos_registros
+            )
+        
+        # 5. Commit único
+        db.commit()
+        
+        # 6. Invalidar caché para los meses afectados
+        for anio, mes in meses_afectados:
+            planificacion_cache.invalidate_for_mes(anio, mes)
+        
+        logger.info(f"🚀 Carga masiva completada: {creados} creados, {actualizados} actualizados en {len(meses_afectados)} meses")
+        
+        return {
+            "message": "Carga masiva completada exitosamente",
+            "creados": creados,
+            "actualizados": actualizados,
+            "total": creados + actualizados,
+            "meses_afectados": len(meses_afectados),
+            "timestamp": datetime.utcnow().isoformat()
+        }
+        
+    except Exception as e:
+        db.rollback()
+        logger.error(f"❌ Error en carga_masiva_turnos: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error en carga masiva: {str(e)}")
+
+# =====================================================
+# RESTO DE ENDPOINTS (sin cambios)
+# =====================================================
 
 @router.post("/masivo")
 async def crear_planificacion_masiva(

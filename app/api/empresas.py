@@ -189,7 +189,7 @@ async def crear_empresa(
         password_hash=get_password_hash(data.admin_password),
         empresa_id=empresa.id,
         rol_global="admin_empresa",
-        roles=["admin"],
+        roles=["admin_empresa", "usuario"],
         activo=True
     )
     db.add(admin_usuario)
