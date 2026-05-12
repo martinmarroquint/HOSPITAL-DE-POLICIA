@@ -20,10 +20,8 @@ from app.schemas.publicacion import (
     PublicacionEstadisticas, EstadisticasGlobales, PublicacionListResponse
 )
 
-# 🆕 IMPORTAR FUNCIONES DE NOTIFICACIONES
 from app.api.notificaciones import crear_notificacion_masiva
 
-# Configurar logger
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
@@ -45,7 +43,8 @@ def enriquecer_publicacion(db: Session, publicacion: Publicacion) -> dict:
         "categoria": publicacion.categoria,
         "es_automatica": publicacion.es_automatica,
         "autor_id": publicacion.autor_id,
-        "empresa_id": publicacion.empresa_id,  # 🆕 Incluir empresa_id
+        "empresa_id": publicacion.empresa_id,
+        "audiencia": getattr(publicacion, 'audiencia', 'toda_empresa'),  # 🆕 Incluir audiencia
         "fecha_publicacion": publicacion.fecha_publicacion,
         "fecha_expiracion": publicacion.fecha_expiracion,
         "activo": publicacion.activo,
@@ -56,7 +55,6 @@ def enriquecer_publicacion(db: Session, publicacion: Publicacion) -> dict:
         "vistas": [v.usuario_id for v in publicacion.vistas] if publicacion.vistas else []
     }
     
-    # Obtener datos del autor si existe
     if publicacion.autor_id:
         autor = db.query(Usuario).filter(Usuario.id == publicacion.autor_id).first()
         if autor:
@@ -73,20 +71,89 @@ def enriquecer_publicacion(db: Session, publicacion: Publicacion) -> dict:
 def verificar_acceso_publicacion(current_user: Usuario, publicacion: Publicacion, db: Session) -> bool:
     """
     Verifica si el usuario actual tiene acceso a la publicación.
-    🆕 También verifica por empresa_id.
+    🆕 Visitantes solo ven publicaciones con audiencia 'visitantes' o 'toda_empresa'
     """
     # Admin y roles con acceso global pueden ver todo
     roles_globales = ['admin', 'recursos_humanos', 'oficina_central', 'oficial_permanencia']
     if any(rol in current_user.roles for rol in roles_globales):
         return True
     
-    # 🆕 Verificar por empresa: usuarios solo ven publicaciones de su empresa o globales
+    # 🆕 VISITANTES: solo ven publicaciones dirigidas a ellos o a toda la empresa
+    if 'visitante' in current_user.roles:
+        audiencia = getattr(publicacion, 'audiencia', 'toda_empresa')
+        if audiencia not in ['visitantes', 'toda_empresa']:
+            return False
+    
+    # Verificar por empresa
     if current_user.empresa_id and publicacion.empresa_id:
         if str(current_user.empresa_id) != str(publicacion.empresa_id):
             return False
     
-    # Todos los usuarios autenticados pueden ver publicaciones activas de su empresa
     return publicacion.activo
+
+
+# =====================================================
+# 🆕 ENDPOINT PÚBLICO PARA VISITANTES (SIN RESTRICCIÓN DE ROLES FUERTES)
+# =====================================================
+
+@router.get("/publico", response_model=List[PublicacionResponse])
+async def listar_publicaciones_publico(
+    activo: Optional[bool] = Query(True),
+    empresa_id: Optional[UUID] = Query(None),
+    audiencia: Optional[str] = Query(None),  # 🆕 Filtrar por audiencia
+    limit: int = Query(20, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+    db: Session = Depends(get_db),
+    current_user: Usuario = Depends(require_roles(["admin", "jefe_area", "usuario", "visitante", "escaner"]))  # ✅ AGREGADO visitante y escaner
+):
+    """
+    Endpoint para visitantes y usuarios regulares.
+    🆕 Filtra automáticamente por audiencia para visitantes.
+    """
+    query = db.query(Publicacion)
+    
+    if activo is not None:
+        query = query.filter(Publicacion.activo == activo)
+    
+    # 🆕 Para visitantes, filtrar SOLO publicaciones dirigidas a ellos
+    if 'visitante' in current_user.roles:
+        query = query.filter(
+            or_(
+                Publicacion.audiencia == 'visitantes',
+                Publicacion.audiencia == 'toda_empresa',
+                Publicacion.audiencia == None  # Publicaciones antiguas sin audiencia definida
+            )
+        )
+    elif audiencia:
+        query = query.filter(Publicacion.audiencia == audiencia)
+    
+    # Filtrar por empresa
+    if empresa_id:
+        query = query.filter(
+            or_(
+                Publicacion.empresa_id == empresa_id,
+                Publicacion.empresa_id == None
+            )
+        )
+    elif current_user.empresa_id and current_user.rol_global != "super_admin":
+        query = query.filter(
+            or_(
+                Publicacion.empresa_id == current_user.empresa_id,
+                Publicacion.empresa_id == None
+            )
+        )
+    
+    query = query.order_by(desc(Publicacion.fijado), desc(Publicacion.fecha_publicacion))
+    
+    publicaciones = query.offset(offset).limit(limit).all()
+    
+    resultado = []
+    for pub in publicaciones:
+        if verificar_acceso_publicacion(current_user, pub, db):
+            resultado.append(enriquecer_publicacion(db, pub))
+    
+    logger.info(f"📋 {len(resultado)} publicaciones listadas (público) para usuario {current_user.id} | roles: {current_user.roles}")
+    return resultado
 
 
 # =====================================================
@@ -98,20 +165,19 @@ async def listar_publicaciones(
     activo: Optional[bool] = Query(True),
     tipo: Optional[str] = Query(None),
     categoria: Optional[str] = Query(None),
-    empresa_id: Optional[UUID] = Query(None),  # 🆕 Parámetro empresa_id
+    empresa_id: Optional[UUID] = Query(None),
+    audiencia: Optional[str] = Query(None),  # 🆕
     limit: int = Query(100, ge=1, le=500),
     offset: int = Query(0, ge=0),
     db: Session = Depends(get_db),
-    current_user: Usuario = Depends(require_roles(["admin", "jefe_area", "usuario"]))
+    current_user: Usuario = Depends(require_roles(["admin", "jefe_area", "usuario", "visitante", "escaner"]))  # ✅ AGREGADO
 ):
     """
     Lista todas las publicaciones con filtros opcionales.
-    🆕 Soporta filtro por empresa_id.
-    Ordenadas por fecha de publicación (más recientes primero).
+    🆕 Visitantes y escaner pueden ver publicaciones (solo las dirigidas a ellos).
     """
     query = db.query(Publicacion)
     
-    # Aplicar filtros
     if activo is not None:
         query = query.filter(Publicacion.activo == activo)
     if tipo:
@@ -119,9 +185,20 @@ async def listar_publicaciones(
     if categoria:
         query = query.filter(Publicacion.categoria == categoria)
     
-    # 🆕 FILTRO POR EMPRESA
+    # 🆕 Para visitantes, filtrar SOLO publicaciones dirigidas a ellos
+    if 'visitante' in current_user.roles:
+        query = query.filter(
+            or_(
+                Publicacion.audiencia == 'visitantes',
+                Publicacion.audiencia == 'toda_empresa',
+                Publicacion.audiencia == None
+            )
+        )
+    elif audiencia:
+        query = query.filter(Publicacion.audiencia == audiencia)
+    
+    # Filtrar por empresa
     if empresa_id:
-        # Mostrar publicaciones de la empresa Y publicaciones globales (sin empresa_id)
         query = query.filter(
             or_(
                 Publicacion.empresa_id == empresa_id,
@@ -129,7 +206,6 @@ async def listar_publicaciones(
             )
         )
     elif current_user.empresa_id and current_user.rol_global != "super_admin":
-        # Si no se especifica empresa pero el usuario tiene una, filtrar automáticamente
         query = query.filter(
             or_(
                 Publicacion.empresa_id == current_user.empresa_id,
@@ -137,12 +213,10 @@ async def listar_publicaciones(
             )
         )
     
-    # Ordenar por fijado primero, luego fecha de publicación
     query = query.order_by(desc(Publicacion.fijado), desc(Publicacion.fecha_publicacion))
     
     publicaciones = query.offset(offset).limit(limit).all()
     
-    # Enriquecer con datos adicionales
     resultado = []
     for pub in publicaciones:
         if verificar_acceso_publicacion(current_user, pub, db):
@@ -156,7 +230,7 @@ async def listar_publicaciones(
 async def obtener_publicacion(
     id: UUID,
     db: Session = Depends(get_db),
-    current_user: Usuario = Depends(require_roles(["admin", "jefe_area", "usuario"]))
+    current_user: Usuario = Depends(require_roles(["admin", "jefe_area", "usuario", "visitante", "escaner"]))  # ✅ AGREGADO
 ):
     """Obtiene una publicación específica por ID"""
     publicacion = db.query(Publicacion).filter(Publicacion.id == id).first()
@@ -174,25 +248,20 @@ async def obtener_publicacion(
 async def crear_publicacion(
     publicacion_data: PublicacionCreate,
     db: Session = Depends(get_db),
-    current_user: Usuario = Depends(require_roles(["admin"]))
+    current_user: Usuario = Depends(require_roles(["admin"]))  # Solo admin crea
 ):
     """
     Crea una nueva publicación.
     Solo administradores pueden crear publicaciones.
-    🆕 Asigna empresa_id del usuario actual.
-    🆕 También crea notificaciones para usuarios de la misma empresa.
     """
-    # Validar según tipo
     if publicacion_data.tipo == 'TEXTO' and not publicacion_data.contenido_texto:
         raise HTTPException(status_code=400, detail="contenido_texto es requerido para tipo TEXTO")
     
     if publicacion_data.tipo in ['IMAGEN', 'PDF'] and not publicacion_data.url_archivo:
         raise HTTPException(status_code=400, detail=f"url_archivo es requerido para tipo {publicacion_data.tipo}")
     
-    # 🆕 Usar empresa_id del usuario si no se especifica
     empresa_id = publicacion_data.empresa_id or current_user.empresa_id
     
-    # Crear publicación
     publicacion = Publicacion(
         titulo=publicacion_data.titulo,
         tipo=publicacion_data.tipo,
@@ -202,7 +271,8 @@ async def crear_publicacion(
         categoria=publicacion_data.categoria or "general",
         es_automatica=publicacion_data.es_automatica or False,
         autor_id=current_user.id,
-        empresa_id=empresa_id,  # 🆕 Asignar empresa
+        empresa_id=empresa_id,
+        audiencia=getattr(publicacion_data, 'audiencia', 'toda_empresa'),  # 🆕 Guardar audiencia
         fecha_publicacion=publicacion_data.fecha_publicacion or datetime.now(),
         fecha_expiracion=publicacion_data.fecha_expiracion,
         fijado=publicacion_data.fijado or False,
@@ -216,11 +286,10 @@ async def crear_publicacion(
     
     logger.info(f"✅ Publicación creada: {publicacion.id} - {publicacion.titulo[:30]}... | empresa: {empresa_id}")
     
-    # 🆕 CREAR NOTIFICACIONES PARA USUARIOS DE LA MISMA EMPRESA
+    # Crear notificaciones
     try:
         from app.models.notificacion import Notificacion
         
-        # 🆕 Filtrar usuarios por empresa
         query_usuarios = db.query(Usuario).filter(Usuario.activo == True)
         if empresa_id:
             query_usuarios = query_usuarios.filter(
@@ -229,6 +298,14 @@ async def crear_publicacion(
                     Usuario.empresa_id == None
                 )
             )
+        
+        # 🆕 Si la audiencia es 'visitantes', notificar solo a visitantes
+        audiencia = getattr(publicacion_data, 'audiencia', 'toda_empresa')
+        if audiencia == 'visitantes':
+            query_usuarios = query_usuarios.filter(Usuario.roles.contains('visitante'))
+        elif audiencia == 'personal':
+            query_usuarios = query_usuarios.filter(~Usuario.roles.contains('visitante'))
+        
         usuarios_activos = query_usuarios.all()
         
         if usuarios_activos:
@@ -253,12 +330,10 @@ async def crear_publicacion(
                     continue
             
             db.commit()
-            logger.info(f"🔔 {notificaciones_creadas} notificaciones creadas para la publicación {publicacion.id}")
-        else:
-            logger.info(f"ℹ️ No hay usuarios activos para notificar")
+            logger.info(f"🔔 {notificaciones_creadas} notificaciones creadas")
     
     except Exception as e:
-        logger.error(f"⚠️ Error creando notificaciones para publicación {publicacion.id}: {e}")
+        logger.error(f"⚠️ Error creando notificaciones: {e}")
         db.rollback()
     
     return enriquecer_publicacion(db, publicacion)
@@ -269,7 +344,7 @@ async def actualizar_publicacion(
     id: UUID,
     publicacion_data: PublicacionUpdate,
     db: Session = Depends(get_db),
-    current_user: Usuario = Depends(require_roles(["admin"]))
+    current_user: Usuario = Depends(require_roles(["admin"]))  # Solo admin edita
 ):
     """Actualiza una publicación existente. Solo administradores."""
     publicacion = db.query(Publicacion).filter(Publicacion.id == id).first()
@@ -277,7 +352,6 @@ async def actualizar_publicacion(
     if not publicacion:
         raise HTTPException(status_code=404, detail="Publicación no encontrada")
     
-    # Actualizar campos
     update_data = publicacion_data.model_dump(exclude_unset=True)
     for field, value in update_data.items():
         setattr(publicacion, field, value)
@@ -294,18 +368,14 @@ async def actualizar_publicacion(
 async def eliminar_publicacion(
     id: UUID,
     db: Session = Depends(get_db),
-    current_user: Usuario = Depends(require_roles(["admin"]))
+    current_user: Usuario = Depends(require_roles(["admin"]))  # Solo admin elimina
 ):
-    """
-    Elimina (desactiva) una publicación.
-    Solo administradores.
-    """
+    """Elimina (desactiva) una publicación. Solo administradores."""
     publicacion = db.query(Publicacion).filter(Publicacion.id == id).first()
     
     if not publicacion:
         raise HTTPException(status_code=404, detail="Publicación no encontrada")
     
-    # Soft delete
     publicacion.activo = False
     db.commit()
     
@@ -327,11 +397,9 @@ async def marcar_como_vista(
     id: UUID,
     request: MarcarVistaRequest,
     db: Session = Depends(get_db),
-    current_user: Usuario = Depends(require_roles(["admin", "jefe_area", "usuario"]))
+    current_user: Usuario = Depends(require_roles(["admin", "jefe_area", "usuario", "visitante", "escaner"]))  # ✅ AGREGADO
 ):
-    """
-    Marca una publicación como vista por un usuario.
-    """
+    """Marca una publicación como vista por un usuario."""
     publicacion = db.query(Publicacion).filter(Publicacion.id == id).first()
     if not publicacion:
         raise HTTPException(status_code=404, detail="Publicación no encontrada")
@@ -375,7 +443,7 @@ async def marcar_como_vista(
 async def obtener_vistas_publicacion(
     id: UUID,
     db: Session = Depends(get_db),
-    current_user: Usuario = Depends(require_roles(["admin"]))
+    current_user: Usuario = Depends(require_roles(["admin"]))  # Solo admin ve estadísticas
 ):
     """Obtiene la lista de usuarios que han visto una publicación."""
     publicacion = db.query(Publicacion).filter(Publicacion.id == id).first()
@@ -393,14 +461,13 @@ async def obtener_vistas_publicacion(
 async def obtener_estadisticas_publicacion(
     id: UUID,
     db: Session = Depends(get_db),
-    current_user: Usuario = Depends(require_roles(["admin"]))
+    current_user: Usuario = Depends(require_roles(["admin"]))  # Solo admin
 ):
     """Obtiene estadísticas detalladas de visualización de una publicación."""
     publicacion = db.query(Publicacion).filter(Publicacion.id == id).first()
     if not publicacion:
         raise HTTPException(status_code=404, detail="Publicación no encontrada")
     
-    # 🆕 Filtrar empleados por empresa de la publicación
     query_empleados = db.query(Personal).filter(Personal.activo == True)
     if publicacion.empresa_id:
         query_empleados = query_empleados.filter(
@@ -454,17 +521,12 @@ async def obtener_estadisticas_publicacion(
     }
 
 
-# =====================================================
-# ENDPOINTS PARA ESTADÍSTICAS GLOBALES
-# =====================================================
-
 @router.get("/estadisticas/globales", response_model=EstadisticasGlobales)
 async def obtener_estadisticas_globales(
     db: Session = Depends(get_db),
-    current_user: Usuario = Depends(require_roles(["admin", "jefe_area"]))
+    current_user: Usuario = Depends(require_roles(["admin", "jefe_area"]))  # Solo admin/jefe
 ):
     """Obtiene estadísticas globales de todas las publicaciones."""
-    # 🆕 Filtrar por empresa del usuario
     query_publicaciones = db.query(Publicacion).filter(Publicacion.activo == True)
     if current_user.empresa_id and current_user.rol_global != "super_admin":
         query_publicaciones = query_publicaciones.filter(
@@ -475,7 +537,6 @@ async def obtener_estadisticas_globales(
         )
     total_publicaciones = query_publicaciones.count()
     
-    # 🆕 Filtrar empleados por empresa
     query_empleados = db.query(Personal).filter(Personal.activo == True)
     if current_user.empresa_id:
         query_empleados = query_empleados.filter(
@@ -516,26 +577,16 @@ async def obtener_estadisticas_globales(
     }
 
 
-# =====================================================
-# ENDPOINTS PARA CUMPLEAÑOS (AUTOMÁTICO)
-# =====================================================
-
 @router.post("/cumpleanios/auto", status_code=201)
 async def generar_publicacion_cumpleanios(
-    empresa_id: Optional[UUID] = Query(None),  # 🆕 Parámetro opcional de empresa
+    empresa_id: Optional[UUID] = Query(None),
     db: Session = Depends(get_db),
-    current_user: Usuario = Depends(require_roles(["admin"]))
+    current_user: Usuario = Depends(require_roles(["admin"]))  # Solo admin
 ):
-    """
-    Genera automáticamente una publicación con los cumpleañeros del día.
-    🆕 Soporta filtro por empresa_id.
-    """
+    """Genera automáticamente una publicación con los cumpleañeros del día."""
     hoy = date.today()
-    
-    # 🆕 Usar empresa_id del parámetro o del usuario actual
     emp_id = empresa_id or current_user.empresa_id
     
-    # Verificar si ya existe una publicación de cumpleaños para hoy
     fecha_inicio = datetime(hoy.year, hoy.month, hoy.day, 0, 0, 0)
     fecha_fin = datetime(hoy.year, hoy.month, hoy.day, 23, 59, 59)
     
@@ -547,7 +598,6 @@ async def generar_publicacion_cumpleanios(
             Publicacion.fecha_publicacion <= fecha_fin
         )
     )
-    # 🆕 Filtrar por empresa también
     if emp_id:
         query_existente = query_existente.filter(
             or_(
@@ -557,14 +607,9 @@ async def generar_publicacion_cumpleanios(
         )
     
     existente = query_existente.first()
-    
     if existente:
-        return {
-            "message": "Ya existe una publicación de cumpleaños para hoy",
-            "id": str(existente.id)
-        }
+        return {"message": "Ya existe una publicación de cumpleaños para hoy", "id": str(existente.id)}
     
-    # 🆕 Buscar cumpleañeros del día filtrados por empresa
     query_empleados = db.query(Personal).filter(Personal.activo == True)
     if emp_id:
         query_empleados = query_empleados.filter(
@@ -584,7 +629,6 @@ async def generar_publicacion_cumpleanios(
     if not cumpleanieros:
         return {"message": "No hay cumpleañeros hoy", "cantidad": 0}
     
-    # Generar contenido
     meses = {
         1: "enero", 2: "febrero", 3: "marzo", 4: "abril",
         5: "mayo", 6: "junio", 7: "julio", 8: "agosto",
@@ -612,7 +656,6 @@ Que este nuevo año de vida esté lleno de éxitos, salud y momentos inolvidable
 
 ¡Felicitaciones de parte de todo el equipo! 🎉"""
     
-    # Crear publicación
     publicacion = Publicacion(
         titulo=f"🎉 ¡Feliz Cumpleaños! - {fecha_formateada}",
         tipo="TEXTO",
@@ -620,7 +663,7 @@ Que este nuevo año de vida esté lleno de éxitos, salud y momentos inolvidable
         categoria="cumpleanios",
         es_automatica=True,
         autor_id=current_user.id,
-        empresa_id=emp_id,  # 🆕 Asignar empresa
+        empresa_id=emp_id,
         fecha_publicacion=datetime.now(),
         activo=True
     )
@@ -629,9 +672,8 @@ Que este nuevo año de vida esté lleno de éxitos, salud y momentos inolvidable
     db.commit()
     db.refresh(publicacion)
     
-    logger.info(f"🎂 Publicación automática de cumpleaños creada: {publicacion.id} - {len(cumpleanieros)} cumpleañeros | empresa: {emp_id}")
+    logger.info(f"🎂 Publicación automática de cumpleaños creada: {publicacion.id}")
     
-    # 🆕 CREAR NOTIFICACIONES PARA USUARIOS DE LA EMPRESA
     try:
         query_usuarios = db.query(Usuario).filter(Usuario.activo == True)
         if emp_id:
@@ -645,7 +687,6 @@ Que este nuevo año de vida esté lleno de éxitos, salud y momentos inolvidable
         
         if usuarios_activos:
             usuarios_ids = [u.id for u in usuarios_activos]
-            
             cantidad = crear_notificacion_masiva(
                 db=db,
                 usuarios_ids=usuarios_ids,
@@ -654,9 +695,7 @@ Que este nuevo año de vida esté lleno de éxitos, salud y momentos inolvidable
                 mensaje=f"Hoy celebramos a {len(cumpleanieros)} compañero(s)",
                 publicacion_id=publicacion.id
             )
-            
             logger.info(f"🔔 {cantidad} notificaciones de cumpleaños creadas")
-    
     except Exception as e:
         logger.error(f"⚠️ Error creando notificaciones de cumpleaños: {e}")
     

@@ -1,5 +1,5 @@
 # app/models/publicacion.py
-# MODELO DE PUBLICACIONES - CON EMPRESA_ID
+# MODELO DE PUBLICACIONES - CON EMPRESA_ID Y AUDIENCIA
 
 from sqlalchemy import Column, String, DateTime, Boolean, JSON, Text, ForeignKey, Integer
 from sqlalchemy.dialects.postgresql import UUID
@@ -31,6 +31,10 @@ class Publicacion(Base):
     # =====================================================
     categoria = Column(String(50), default="general")
     es_automatica = Column(Boolean, default=False)
+    
+    # 🆕 CAMPO AUDIENCIA - Define quién puede ver la publicación
+    # Valores: 'toda_empresa' (default), 'personal', 'visitantes'
+    audiencia = Column(String(20), default='toda_empresa', nullable=False, index=True)
     
     # =====================================================
     # RELACIONES

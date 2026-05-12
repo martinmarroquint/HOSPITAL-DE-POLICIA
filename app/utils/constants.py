@@ -159,33 +159,28 @@ AREAS_CRITICAS = [
 ]
 
 # =====================================================
-# ROLES DE USUARIO
+# ROLES DE USUARIO (Importados desde fuente centralizada)
 # =====================================================
-ROLES = {
-    "ADMIN": "admin",
-    "JEFE_AREA": "jefe_area",
-    "OFICIAL_PERMANENCIA": "oficial_permanencia",
-    "CONTROL_QR": "control_qr",
-    "USUARIO": "usuario",
-    "MEDICO": "medico",
-    "ENFERMERO": "enfermero",
-    "TECNICO": "tecnico"
-}
+from app.utils.roles import (
+    ROLES_SISTEMA, 
+    ROLES_ADMIN, 
+    ROLES_JEFE, 
+    ROLES_JEFATURA, 
+    TODOS_LOS_ROLES,
+    ROLES_PUEDEN_APROBAR_SOLICITUDES,
+    ROLES_PUEDEN_CONFIGURAR,
+    ROLES_PUEDEN_GESTIONAR_USUARIOS,
+    ROLES_PUEDEN_CREAR_PUBLICACIONES,
+    ROLES_PUEDEN_VER_REPORTES,
+    ROLES_SOLO_LECTURA,
+    ROLES_SOLO_ESCANER,
+)
 
+# Compatibilidad con código existente
+ROLES = {k.upper(): k for k in ROLES_SISTEMA.keys()}
 ROLES_LISTA = list(ROLES.values())
-
-# Roles que pueden aprobar solicitudes
-ROLES_APROBADORES = [
-    ROLES["ADMIN"],
-    ROLES["JEFE_AREA"]
-]
-
-# Roles para control de asistencia
-ROLES_CONTROL_ASISTENCIA = [
-    ROLES["OFICIAL_PERMANENCIA"],
-    ROLES["CONTROL_QR"],
-    ROLES["ADMIN"]
-]
+ROLES_APROBADORES = ROLES_ADMIN + ROLES_JEFE
+ROLES_CONTROL_ASISTENCIA = ROLES_ADMIN + ROLES_JEFE + ROLES_SOLO_ESCANER
 
 # =====================================================
 # TIPOS DE TURNO

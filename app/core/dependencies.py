@@ -16,6 +16,7 @@ from app.database import get_db
 from app.models.usuario import Usuario
 from app.models.empresa import Empresa
 from app.core.security import decode_token, has_role, has_rol_global
+from app.utils.roles import ROLES_ADMIN, ROLES_JEFE, ROLES_SOLO_ESCANER
 
 oauth2_scheme = OAuth2PasswordBearer(
     tokenUrl="/api/v1/auth/login",
@@ -209,10 +210,10 @@ def require_rol_global(allowed_roles: List[str]):
 # DEPENDENCIAS PREDEFINIDAS
 # =====================================================
 
-require_admin = require_roles(["admin"])
-require_jefe_area = require_roles(["admin", "jefe_area"])
-require_oficial_permanencia = require_roles(["admin", "oficial_permanencia"])
-require_control_qr = require_roles(["admin", "control_qr", "oficial_permanencia"])
+require_admin = require_roles(ROLES_ADMIN)
+require_jefe_area = require_roles(ROLES_ADMIN + ROLES_JEFE)
+require_oficial_permanencia = require_roles(ROLES_ADMIN + ROLES_JEFE)
+require_control_qr = require_roles(ROLES_ADMIN + ROLES_JEFE + ROLES_SOLO_ESCANER)
 require_super_admin = require_rol_global(["super_admin"])
 require_admin_cliente = require_rol_global(["super_admin", "admin_cliente"])
 require_admin_empresa = require_rol_global(["super_admin", "admin_cliente", "admin_empresa"])

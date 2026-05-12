@@ -9,6 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File
 from sqlalchemy.orm import Session
 from typing import List, Optional, Dict, Any
 from uuid import UUID, uuid4
+from app.utils.roles import ROLES_ADMIN
 import os
 
 from app.database import get_db
@@ -154,7 +155,7 @@ async def listar_turnos(
 async def crear_turno(
     turno: TurnoCreate,
     service: ConfiguracionService = Depends(get_config_service),
-    current_user: Usuario = Depends(require_roles(["admin", "admin_empresa", "admin_cliente"]))
+    current_user: Usuario = Depends(require_roles(ROLES_ADMIN))
 ):
     """Crea un nuevo tipo de turno asignado a la empresa del usuario"""
     try:
@@ -172,7 +173,7 @@ async def actualizar_turno(
     turno_id: UUID,
     turno: TurnoUpdate,
     service: ConfiguracionService = Depends(get_config_service),
-    current_user: Usuario = Depends(require_roles(["admin", "admin_empresa", "admin_cliente"]))
+    current_user: Usuario = Depends(require_roles(ROLES_ADMIN))
 ):
     """Actualiza un tipo de turno"""
     try:
@@ -187,7 +188,7 @@ async def actualizar_turno(
 async def eliminar_turno(
     turno_id: UUID,
     service: ConfiguracionService = Depends(get_config_service),
-    current_user: Usuario = Depends(require_roles(["admin", "admin_empresa", "admin_cliente"]))
+    current_user: Usuario = Depends(require_roles(ROLES_ADMIN))
 ):
     """Elimina un tipo de turno"""
     try:
@@ -203,7 +204,7 @@ async def eliminar_turno(
 async def crear_turnos_masivo(
     data: dict,
     service: ConfiguracionService = Depends(get_config_service),
-    current_user: Usuario = Depends(require_roles(["admin", "admin_empresa", "admin_cliente"]))
+    current_user: Usuario = Depends(require_roles(ROLES_ADMIN))
 ):
     """Crea múltiples turnos a la vez"""
     turnos_data = data.get("turnos", [])
@@ -238,7 +239,7 @@ async def get_reglas(
 async def guardar_reglas(
     reglas: ReglaCreate,
     service: ConfiguracionService = Depends(get_config_service),
-    current_user: Usuario = Depends(require_roles(["admin", "admin_empresa", "admin_cliente"]))
+    current_user: Usuario = Depends(require_roles(ROLES_ADMIN))
 ):
     """Guarda o actualiza las reglas de cumplimiento"""
     reglas_data = reglas.model_dump()
@@ -268,7 +269,7 @@ async def get_organigrama(
 async def guardar_niveles(
     data: dict,
     service: ConfiguracionService = Depends(get_config_service),
-    current_user: Usuario = Depends(require_roles(["admin", "admin_empresa", "admin_cliente"]))
+    current_user: Usuario = Depends(require_roles(ROLES_ADMIN))
 ):
     """Guarda los niveles jerárquicos"""
     niveles_data = data.get("niveles", [])
@@ -284,7 +285,7 @@ async def guardar_niveles(
 async def crear_unidad(
     unidad: UnidadCreate,
     service: ConfiguracionService = Depends(get_config_service),
-    current_user: Usuario = Depends(require_roles(["admin", "admin_empresa", "admin_cliente"]))
+    current_user: Usuario = Depends(require_roles(ROLES_ADMIN))
 ):
     """Crea una unidad organizacional"""
     try:
@@ -302,7 +303,7 @@ async def actualizar_unidad(
     unidad_id: UUID,
     unidad: UnidadUpdate,
     service: ConfiguracionService = Depends(get_config_service),
-    current_user: Usuario = Depends(require_roles(["admin", "admin_empresa", "admin_cliente"]))
+    current_user: Usuario = Depends(require_roles(ROLES_ADMIN))
 ):
     """Actualiza una unidad organizacional"""
     try:
@@ -315,7 +316,7 @@ async def actualizar_unidad(
 async def eliminar_unidad(
     unidad_id: UUID,
     service: ConfiguracionService = Depends(get_config_service),
-    current_user: Usuario = Depends(require_roles(["admin", "admin_empresa", "admin_cliente"]))
+    current_user: Usuario = Depends(require_roles(ROLES_ADMIN))
 ):
     """Elimina una unidad organizacional"""
     try:
@@ -343,7 +344,7 @@ async def listar_roles(
 async def crear_rol(
     rol: RolCreate,
     service: ConfiguracionService = Depends(get_config_service),
-    current_user: Usuario = Depends(require_roles(["admin", "admin_empresa", "admin_cliente"]))
+    current_user: Usuario = Depends(require_roles(ROLES_ADMIN))
 ):
     """Crea un nuevo rol"""
     try:
@@ -361,7 +362,7 @@ async def actualizar_rol(
     rol_id: UUID,
     rol: RolUpdate,
     service: ConfiguracionService = Depends(get_config_service),
-    current_user: Usuario = Depends(require_roles(["admin", "admin_empresa", "admin_cliente"]))
+    current_user: Usuario = Depends(require_roles(ROLES_ADMIN))
 ):
     """Actualiza un rol"""
     try:
@@ -374,7 +375,7 @@ async def actualizar_rol(
 async def eliminar_rol(
     rol_id: UUID,
     service: ConfiguracionService = Depends(get_config_service),
-    current_user: Usuario = Depends(require_roles(["admin", "admin_empresa", "admin_cliente"]))
+    current_user: Usuario = Depends(require_roles(ROLES_ADMIN))
 ):
     """Elimina un rol"""
     try:
@@ -403,7 +404,7 @@ async def get_campos_personal(
 async def guardar_campos_personal(
     data: CamposPersonalUpdateBulk,
     service: ConfiguracionService = Depends(get_config_service),
-    current_user: Usuario = Depends(require_roles(["admin", "admin_empresa", "admin_cliente"]))
+    current_user: Usuario = Depends(require_roles(ROLES_ADMIN))
 ):
     """Guarda la configuración de campos del personal para la empresa del usuario"""
     empresa_id = get_empresa_id_from_user(current_user)
@@ -439,7 +440,7 @@ async def listar_catalogos(
 async def crear_catalogo(
     catalogo: CatalogoCreate,
     service: ConfiguracionService = Depends(get_config_service),
-    current_user: Usuario = Depends(require_roles(["admin", "admin_empresa", "admin_cliente"]))
+    current_user: Usuario = Depends(require_roles(ROLES_ADMIN))
 ):
     """Crea una entrada de catálogo"""
     catalogo_data = catalogo.model_dump()
@@ -453,7 +454,7 @@ async def crear_catalogo(
 async def eliminar_catalogo(
     catalogo_id: UUID,
     service: ConfiguracionService = Depends(get_config_service),
-    current_user: Usuario = Depends(require_roles(["admin", "admin_empresa", "admin_cliente"]))
+    current_user: Usuario = Depends(require_roles(ROLES_ADMIN))
 ):
     """Elimina una entrada de catálogo"""
     try:
@@ -490,7 +491,7 @@ async def get_config_cliente(
 async def update_config_cliente(
     data: ClienteConfigUpdate,
     db: Session = Depends(get_db),
-    current_user: Usuario = Depends(require_roles(["admin", "admin_empresa", "admin_cliente"]))
+    current_user: Usuario = Depends(require_roles(ROLES_ADMIN))
 ):
     """Actualiza la configuración del cliente"""
     if not current_user.empresa_id:
@@ -514,7 +515,7 @@ async def update_config_cliente(
 async def subir_logo_cliente(
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
-    current_user: Usuario = Depends(require_roles(["admin", "admin_empresa", "admin_cliente"]))
+    current_user: Usuario = Depends(require_roles(ROLES_ADMIN))
 ):
     """Sube el logo de la organización"""
     if not current_user.empresa_id:
@@ -553,7 +554,7 @@ async def subir_logo_cliente(
 @router.delete("/cliente/logo", tags=["Configuración"])
 async def eliminar_logo_cliente(
     db: Session = Depends(get_db),
-    current_user: Usuario = Depends(require_roles(["admin", "admin_empresa", "admin_cliente"]))
+    current_user: Usuario = Depends(require_roles(ROLES_ADMIN))
 ):
     """Elimina el logo actual"""
     if not current_user.empresa_id:
@@ -580,7 +581,7 @@ async def eliminar_logo_cliente(
 @router.post("/organigrama/niveles/semilla", tags=["Configuración"])
 async def crear_niveles_semilla(
     service: ConfiguracionService = Depends(get_config_service),
-    current_user: Usuario = Depends(require_roles(["admin", "admin_empresa", "admin_cliente"]))
+    current_user: Usuario = Depends(require_roles(ROLES_ADMIN))
 ):
     """Crea los niveles jerárquicos por defecto"""
     niveles_default = [

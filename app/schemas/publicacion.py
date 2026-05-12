@@ -1,5 +1,5 @@
 # app/schemas/publicacion.py
-# SCHEMAS PARA PUBLICACIONES - CON EMPRESA_ID
+# SCHEMAS PARA PUBLICACIONES - CON EMPRESA_ID Y AUDIENCIA
 
 from pydantic import BaseModel, Field, validator
 from typing import Optional, List, Dict, Any
@@ -19,7 +19,8 @@ class PublicacionBase(BaseModel):
     descripcion: Optional[str] = None
     categoria: Optional[str] = "general"
     es_automatica: Optional[bool] = False
-    empresa_id: Optional[UUID] = None  # 🆕 CAMPO EMPRESA_ID
+    empresa_id: Optional[UUID] = None
+    audiencia: Optional[str] = "toda_empresa"  # 🆕 CAMPO AUDIENCIA
     
     @validator('tipo')
     def validar_tipo(cls, v):
@@ -27,6 +28,14 @@ class PublicacionBase(BaseModel):
         if v.upper() not in tipos_validos:
             raise ValueError(f"Tipo debe ser uno de: {tipos_validos}")
         return v.upper()
+    
+    @validator('audiencia')
+    def validar_audiencia(cls, v):
+        if v:
+            audiencias_validas = ['toda_empresa', 'personal', 'visitantes']
+            if v not in audiencias_validas:
+                raise ValueError(f"Audiencia debe ser una de: {audiencias_validas}")
+        return v
     
     @validator('contenido_texto')
     def validar_contenido_texto(cls, v, values):
@@ -56,7 +65,8 @@ class PublicacionUpdate(BaseModel):
     url_archivo: Optional[str] = Field(None, max_length=500)
     descripcion: Optional[str] = None
     categoria: Optional[str] = None
-    empresa_id: Optional[UUID] = None  # 🆕 CAMPO EMPRESA_ID
+    empresa_id: Optional[UUID] = None
+    audiencia: Optional[str] = None  # 🆕 CAMPO AUDIENCIA
     fecha_expiracion: Optional[datetime] = None
     activo: Optional[bool] = None
     fijado: Optional[bool] = None
@@ -70,6 +80,14 @@ class PublicacionUpdate(BaseModel):
             return v.upper()
         return v
     
+    @validator('audiencia')
+    def validar_audiencia(cls, v):
+        if v:
+            audiencias_validas = ['toda_empresa', 'personal', 'visitantes']
+            if v not in audiencias_validas:
+                raise ValueError(f"Audiencia debe ser una de: {audiencias_validas}")
+        return v
+    
     class Config:
         from_attributes = True
 
@@ -80,7 +98,8 @@ class PublicacionResponse(PublicacionBase):
     autor_nombre: Optional[str] = None
     autor_area: Optional[str] = None
     autor_iniciales: Optional[str] = None
-    empresa_id: Optional[UUID] = None  # 🆕 CAMPO EMPRESA_ID
+    empresa_id: Optional[UUID] = None
+    audiencia: Optional[str] = "toda_empresa"  # 🆕 CAMPO AUDIENCIA
     fecha_publicacion: datetime
     fecha_expiracion: Optional[datetime] = None
     activo: bool
@@ -93,10 +112,6 @@ class PublicacionResponse(PublicacionBase):
     class Config:
         from_attributes = True
 
-
-# =====================================================
-# SCHEMAS PARA VISTAS
-# =====================================================
 
 class PublicacionVistaCreate(BaseModel):
     publicacion_id: UUID
@@ -116,10 +131,6 @@ class PublicacionVistaResponse(BaseModel):
 class MarcarVistaRequest(BaseModel):
     usuario_id: UUID
 
-
-# =====================================================
-# SCHEMAS PARA ESTADÍSTICAS
-# =====================================================
 
 class PublicacionEstadisticas(BaseModel):
     publicacion_id: UUID
@@ -144,10 +155,6 @@ class EstadisticasGlobales(BaseModel):
     class Config:
         from_attributes = True
 
-
-# =====================================================
-# SCHEMAS PARA RESPUESTAS PAGINADAS
-# =====================================================
 
 class PublicacionListResponse(BaseModel):
     items: List[PublicacionResponse]
