@@ -2,6 +2,7 @@
 # ✅ QR DINÁMICO: Solo para trabajadores (requiere login)
 # ✅ QR ESTÁTICO: Solo para visitantes (generado por admin)
 # ✅ SEPARACIÓN CLARA DE RESPONSABILIDADES
+# 🆕 CORREGIDO: admin_empresa y admin_cliente incluidos en permisos
 
 from fastapi import APIRouter, Depends, HTTPException, status, Body, Query, Request
 from fastapi.responses import Response
@@ -66,7 +67,8 @@ QR_MENSAJES = {
     "QR_ESTATICO_OBTENIDO": "QR estático obtenido correctamente",
     "SOLO_VISITANTES": "Solo los visitantes pueden tener QR estático. Los trabajadores usan QR dinámico.",
     "SOLO_TRABAJADORES": "Solo los trabajadores pueden generar QR dinámico. Los visitantes usan QR estático.",
-    "VISITANTE_INACTIVO": "Visitante inactivo o no encontrado"
+    "VISITANTE_INACTIVO": "Visitante inactivo o no encontrado",
+    "NO_ES_VISITANTE": "El personal no es visitante, no puede tener QR estático"
 }
 
 ERROR_CODES = {
@@ -160,13 +162,20 @@ def generar_payload_nuevo_formato(empleado_id: str, empleado_nombre: str, es_vis
     }
 
 
+# 🆕 CORREGIDO: Incluye admin_empresa y admin_cliente
 def es_admin_o_super_admin(user: Usuario) -> bool:
-    """Verifica si el usuario es admin o super_admin"""
-    if user.rol_global == "super_admin":
+    """Verifica si el usuario es admin, admin_empresa, admin_cliente o super_admin"""
+    if user.rol_global in ["super_admin", "admin_cliente"]:
         return True
+    
+    if user.rol_global == "admin_empresa":
+        return True
+    
     roles = user.roles or []
     if isinstance(roles, list):
-        return "admin" in [r.lower() for r in roles if isinstance(r, str)]
+        roles_lower = [r.lower() for r in roles if isinstance(r, str)]
+        return any(r in roles_lower for r in ["admin", "admin_empresa", "admin_cliente"])
+    
     return False
 
 
@@ -360,7 +369,7 @@ async def generar_qr_estatico(
 ):
     """
     Genera QR permanente para VISITANTES.
-    Solo admin o super_admin pueden generar QR estáticos.
+    Solo admin, admin_empresa, admin_cliente o super_admin pueden generar QR estáticos.
     Los trabajadores NO pueden tener QR estático.
     """
     if not es_admin_o_super_admin(current_user):
@@ -403,6 +412,7 @@ async def generar_qr_estatico(
 
 # =====================================================
 # ✅ ENDPOINT: OBTENER QR ESTÁTICO (SOLO VISITANTES)
+# 🆕 CORREGIDO: admin_empresa y admin_cliente pueden ver QR
 # =====================================================
 
 @router.get("/empleado/{empleado_id}/qr-estatico")
@@ -415,6 +425,7 @@ async def obtener_qr_estatico(
     Obtiene el QR estático de un VISITANTE.
     Los trabajadores NO tienen QR estático.
     Si no existe, lo genera automáticamente.
+    🆕 admin_empresa y admin_cliente tienen permiso para ver cualquier QR de su empresa.
     """
     # Verificar permisos
     es_propio = str(current_user.personal_id) == str(empleado_id)
@@ -437,8 +448,26 @@ async def obtener_qr_estatico(
             detail="Personal inactivo"
         )
     
-    # ✅ VALIDACIÓN: Solo visitantes pueden tener QR estático
+    # 🆕 Verificar que sea visitante (los trabajadores no tienen QR estático)
     if es_trabajador_personal(personal):
+        # 🆕 Si no es visitante, verificar si ya tiene QR estático por error y devolver mensaje claro
+        qr_existente = db.query(QRRegistro).filter(
+            QRRegistro.empleado_id == empleado_id,
+            QRRegistro.tipo == "visitante"
+        ).first()
+        if qr_existente:
+            # Si existe un QR estático antiguo, devolverlo (compatibilidad)
+            logger.warning(f"⚠️ Trabajador {personal.nombre} tiene QR estático antiguo, devolviendo por compatibilidad")
+            return {
+                "qr_data": qr_existente.codigo,
+                "qr_id": qr_existente.qr_id,
+                "empleado_id": str(empleado_id),
+                "generado_en": qr_existente.generado_en.isoformat(),
+                "expira_en": qr_existente.expira_en.isoformat(),
+                "tipo": qr_existente.tipo,
+                "advertencia": "Este personal es trabajador, no debería tener QR estático",
+                "mensaje": QR_MENSAJES["QR_ESTATICO_OBTENIDO"]
+            }
         raise HTTPException(
             status_code=400,
             detail=QR_MENSAJES["SOLO_VISITANTES"]
@@ -470,7 +499,8 @@ async def obtener_qr_estatico(
 
 
 # =====================================================
-# ENDPOINT: VALIDAR QR DE ASISTENCIA (TRABAJADORES + VISITANTES)
+# 🆕 ENDPOINT: VALIDAR QR DE ASISTENCIA
+# CORREGIDO: admin_empresa y admin_cliente incluidos
 # =====================================================
 
 @router.post("/validar")
@@ -478,15 +508,20 @@ async def validar_qr(
     qr_data: str = Body(...),
     tipo: str = Body(...),
     db: Session = Depends(get_db),
-    current_user: Usuario = Depends(require_roles(["oficial_permanencia", "control_qr", "admin"]))
+    current_user: Usuario = Depends(require_roles([
+        "admin", "admin_empresa", "admin_cliente", 
+        "oficial_permanencia", "control_qr", 
+        "jefe_area", "jefe_grupo", "jefe_departamento", "jefe_direccion"
+    ]))
 ):
     """
     Valida QR de asistencia.
     Soporta:
     - Trabajadores: QR dinámico (t:a), requiere turno
     - Visitantes: QR estático (t:v), sin turno
+    🆕 admin_empresa y admin_cliente pueden validar QR.
     """
-    logger.info(f"Validando QR - Tipo: {tipo}")
+    logger.info(f"Validando QR - Tipo: {tipo} - Usuario: {current_user.id}")
     
     try:
         decoded = base64.b64decode(qr_data).decode()
@@ -520,6 +555,16 @@ async def validar_qr(
                 status_code=400, 
                 detail=QR_MENSAJES["EMPLEADO_INACTIVO"]
             )
+        
+        # 🆕 Verificar que el empleado pertenece a la misma empresa del validador
+        if current_user.empresa_id and empleado.empresa_id:
+            if str(current_user.empresa_id) != str(empleado.empresa_id):
+                # Solo super_admin y admin_cliente pueden validar cross-empresa
+                if current_user.rol_global not in ["super_admin", "admin_cliente"]:
+                    raise HTTPException(
+                        status_code=403,
+                        detail="Este personal no pertenece a su empresa"
+                    )
         
         hoy = ahora_peru.date()
         turno_codigo = "VISITANTE"
@@ -671,7 +716,7 @@ async def validar_token_emergencia(
     solicitud_id: UUID = Body(...),
     token: str = Body(...),
     db: Session = Depends(get_db),
-    current_user: Usuario = Depends(require_roles(["control_qr", "admin", "oficial_permanencia"]))
+    current_user: Usuario = Depends(require_roles(["control_qr", "admin", "admin_empresa", "admin_cliente", "oficial_permanencia"]))
 ):
     """Valida token de emergencia"""
     return {

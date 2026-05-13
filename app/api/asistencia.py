@@ -1,8 +1,10 @@
-# api/asistencia.py - VERSIÓN ACTUALIZADA CON SOPORTE MULTI-EMPRESA, QR V2 Y VISITANTE
+# api/asistencia.py - VERSIÓN ACTUALIZADA CON SOPORTE MULTI-EMPRESA, QR V2, VISITANTE Y ROLES CORREGIDOS
+# 🆕 CORREGIDO: admin_empresa y admin_cliente incluidos en todos los endpoints
+
 from fastapi import APIRouter, Depends, HTTPException, Query, BackgroundTasks, Body
 from fastapi.responses import Response, JSONResponse
 from sqlalchemy.orm import Session
-from sqlalchemy import text, cast, String
+from sqlalchemy import text, cast, String, or_
 from typing import List, Optional
 from datetime import datetime, date, timedelta, timezone as tz
 from uuid import UUID
@@ -32,6 +34,39 @@ PERU_TZ = pytz.timezone('America/Lima')
 router = APIRouter()
 
 # =====================================================
+# 🆕 ROLES UNIFICADOS PARA ENDPOINTS
+# =====================================================
+
+# Roles que pueden VER registros de asistencia
+ROLES_VER_ASISTENCIA = [
+    "admin", "admin_empresa", "admin_cliente",
+    "oficial_permanencia", "jefe_area", "jefe_grupo", 
+    "jefe_departamento", "jefe_direccion", 
+    "control_qr", "visitante"
+]
+
+# Roles que pueden REGISTRAR asistencia (QR o manual)
+ROLES_REGISTRAR_ASISTENCIA = [
+    "admin", "admin_empresa", "admin_cliente",
+    "oficial_permanencia", "control_qr",
+    "jefe_area", "jefe_grupo", "jefe_departamento", "jefe_direccion"
+]
+
+# Roles que pueden ver ESTADÍSTICAS
+ROLES_ESTADISTICAS = [
+    "admin", "admin_empresa", "admin_cliente",
+    "oficial_permanencia", "jefe_area", "jefe_grupo",
+    "jefe_departamento", "jefe_direccion"
+]
+
+# Roles que pueden ver PERSONAL ACTIVO
+ROLES_PERSONAL_ACTIVO = [
+    "admin", "admin_empresa", "admin_cliente",
+    "oficial_permanencia", "jefe_area", "jefe_grupo",
+    "jefe_departamento", "jefe_direccion", "control_qr"
+]
+
+# =====================================================
 # FUNCIÓN AUXILIAR PARA OBTENER HORA LOCAL DE PERÚ
 # =====================================================
 
@@ -46,6 +81,28 @@ def convertir_a_decimal(dt: datetime) -> float:
 def generar_id_corto(uuid_str: str, longitud: int = 8) -> str:
     """Genera un ID corto a partir de un UUID (últimos N caracteres)"""
     return uuid_str.replace('-', '')[-longitud:]
+
+# =====================================================
+# 🆕 FUNCIÓN AUXILIAR: VERIFICAR PERMISOS DE EMPRESA
+# =====================================================
+
+def verificar_permiso_empresa(current_user, personal, operacion: str = "ver"):
+    """
+    Verifica que el usuario tenga permiso sobre el personal según su empresa.
+    admin_cliente y super_admin tienen acceso cross-empresa.
+    admin_empresa solo ve su propia empresa.
+    """
+    if current_user.rol_global in ["super_admin", "admin_cliente"]:
+        return True
+    
+    if current_user.empresa_id and personal.empresa_id:
+        if str(current_user.empresa_id) != str(personal.empresa_id):
+            raise HTTPException(
+                status_code=403, 
+                detail=f"Este personal no pertenece a su empresa. No puede {operacion}."
+            )
+    
+    return True
 
 # =====================================================
 # FUNCIÓN AUXILIAR PARA CALCULAR INCIDENCIAS
@@ -68,9 +125,15 @@ def calcular_incidencias(tipo: str, hora_registro: datetime, turno_codigo: str, 
         "FR": {"entrada": None, "salida": None, "tolerancia": 0},
         "VAC": {"entrada": None, "salida": None, "tolerancia": 0},
         "DM": {"entrada": None, "salida": None, "tolerancia": 0},
+        "VISITANTE": {"entrada": None, "salida": None, "tolerancia": 0},  # 🆕 Visitantes sin restricción
     }
     
     horario = horarios_turno.get(turno_codigo, {"entrada": None, "salida": None, "tolerancia": 15})
+    
+    # 🆕 Si no hay horario definido (visitantes, franco, vacaciones), sin incidencias
+    if horario["entrada"] is None and horario["salida"] is None:
+        return {"puntual": {"minutos": 0, "tipo": "puntual", "mensaje": "Registro exitoso"}}
+    
     hora_decimal = convertir_a_decimal(hora_registro)
     
     if tipo == "ENTRADA" and horario["entrada"] is not None:
@@ -98,6 +161,11 @@ def calcular_incidencias(tipo: str, hora_registro: datetime, turno_codigo: str, 
             incidencias["salida_tardia"] = {"minutos": abs(diferencia_minutos), "horas": round(abs(diferencia_minutos) / 60, 1), "tipo": "salida_tardia", "mensaje": f"Salió {abs(diferencia_minutos)} minutos después"}
         else:
             incidencias["puntual"] = {"minutos": 0, "tipo": "puntual", "mensaje": "Salió puntual"}
+    
+    # 🆕 Si no se detectó ninguna incidencia específica
+    if not incidencias:
+        incidencias["puntual"] = {"minutos": 0, "tipo": "puntual", "mensaje": "Registro exitoso"}
+    
     return incidencias
 
 
@@ -123,15 +191,10 @@ def generar_mensaje_incidencia(incidencias: dict, tipo: str) -> str:
 
 def aplicar_filtro_empresa(query, current_user, modelo):
     """Aplica filtro de empresa a una query."""
-    if current_user.empresa_id and current_user.rol_global != "super_admin":
+    if current_user.empresa_id and current_user.rol_global not in ["super_admin", "admin_cliente"]:
         if hasattr(modelo, 'empresa_id'):
             query = query.filter(modelo.empresa_id == current_user.empresa_id)
     return query
-
-# =====================================================
-# ROLES PERMITIDOS PARA VISITANTES (VER SU PROPIA ASISTENCIA)
-# =====================================================
-ROLES_VER_ASISTENCIA = ["admin", "oficial_permanencia", "jefe_area", "control_qr", "visitante"]
 
 # =====================================================
 # MANEJADOR OPTIONS GLOBAL PARA CORS
@@ -174,15 +237,22 @@ async def health_check():
 @router.get("/registros-hoy")
 async def registros_hoy(
     fecha: date = Query(default_factory=date.today),
+    empresa_id: Optional[UUID] = Query(None),  # 🆕 Parámetro empresa_id
     db: Session = Depends(get_db),
-    current_user = Depends(require_roles(["admin", "oficial_permanencia", "jefe_area", "control_qr"]))
+    current_user = Depends(require_roles(ROLES_VER_ASISTENCIA))
 ):
     """Endpoint para obtener registros de hoy con filtro multi-empresa"""
     try:
         inicio = datetime.combine(fecha, datetime.min.time())
         fin = datetime.combine(fecha, datetime.max.time())
         query = db.query(Asistencia).filter(Asistencia.timestamp >= inicio, Asistencia.timestamp <= fin)
-        query = aplicar_filtro_empresa(query, current_user, Asistencia)
+        
+        # 🆕 Usar empresa_id del parámetro o del usuario
+        if empresa_id:
+            query = query.filter(Asistencia.empresa_id == empresa_id)
+        else:
+            query = aplicar_filtro_empresa(query, current_user, Asistencia)
+        
         registros = query.order_by(Asistencia.timestamp.desc()).all()
         resultado = []
         for r in registros:
@@ -196,7 +266,19 @@ async def registros_hoy(
                         controlador_nombre = controlador_personal.nombre if controlador_personal else controlador.email
                     else:
                         controlador_nombre = controlador.email
-            resultado.append({"id": str(r.id), "personal_id": str(r.personal_id), "nombre": personal.nombre if personal else "Desconocido", "grado": personal.grado if personal else "", "timestamp": r.timestamp.isoformat(), "tipo": r.tipo, "tipo_registro": r.tipo_registro, "turno_codigo": r.turno_codigo, "controlador": controlador_nombre})
+            resultado.append({
+                "id": str(r.id), 
+                "personal_id": str(r.personal_id), 
+                "nombre": personal.nombre if personal else "Desconocido", 
+                "grado": personal.grado if personal else "", 
+                "timestamp": r.timestamp.isoformat(), 
+                "fecha": r.timestamp.strftime("%Y-%m-%d") if r.timestamp else "",
+                "hora": r.timestamp.strftime("%H:%M:%S") if r.timestamp else "",
+                "tipo": r.tipo, 
+                "tipo_registro": r.tipo_registro, 
+                "turno_codigo": r.turno_codigo, 
+                "controlador": controlador_nombre
+            })
         return resultado
     except Exception as e:
         logger.error(f"Error en registros_hoy: {str(e)}")
@@ -210,15 +292,21 @@ async def registros_hoy(
 async def get_registros_por_rango(
     fecha_inicio: date = Query(...),
     fecha_fin: date = Query(...),
+    empresa_id: Optional[UUID] = Query(None),  # 🆕
     db: Session = Depends(get_db),
-    current_user = Depends(require_roles(["admin", "oficial_permanencia", "jefe_area", "control_qr"]))
+    current_user = Depends(require_roles(ROLES_VER_ASISTENCIA))
 ):
     """Obtener registros de asistencia por rango de fechas con filtro multi-empresa"""
     try:
         inicio = datetime.combine(fecha_inicio, datetime.min.time())
         fin = datetime.combine(fecha_fin, datetime.max.time())
         query = db.query(Asistencia).filter(Asistencia.timestamp >= inicio, Asistencia.timestamp <= fin)
-        query = aplicar_filtro_empresa(query, current_user, Asistencia)
+        
+        if empresa_id:
+            query = query.filter(Asistencia.empresa_id == empresa_id)
+        else:
+            query = aplicar_filtro_empresa(query, current_user, Asistencia)
+        
         registros = query.order_by(Asistencia.timestamp.desc()).all()
         resultado = []
         personal_cache = {}
@@ -241,7 +329,20 @@ async def get_registros_por_rango(
                     controlador_cache[r.created_by] = controlador_nombre
                 else:
                     controlador_nombre = controlador_cache[r.created_by]
-            resultado.append({"id": str(r.id), "personal_id": str(r.personal_id), "nombre": personal.nombre if personal else "Desconocido", "grado": personal.grado if personal else "", "cip": personal.cip if personal else "", "dni": personal.dni if personal else "", "area": personal.area if personal else "", "timestamp": r.timestamp.isoformat(), "tipo": r.tipo, "tipo_registro": r.tipo_registro, "turno_codigo": r.turno_codigo, "controlador": controlador_nombre})
+            resultado.append({
+                "id": str(r.id), 
+                "personal_id": str(r.personal_id), 
+                "nombre": personal.nombre if personal else "Desconocido", 
+                "grado": personal.grado if personal else "", 
+                "cip": personal.cip if personal else "", 
+                "dni": personal.dni if personal else "", 
+                "area": personal.area if personal else "", 
+                "timestamp": r.timestamp.isoformat(), 
+                "tipo": r.tipo, 
+                "tipo_registro": r.tipo_registro, 
+                "turno_codigo": r.turno_codigo, 
+                "controlador": controlador_nombre
+            })
         return resultado
     except Exception as e:
         logger.error(f"Error en get_registros_por_rango: {str(e)}")
@@ -255,7 +356,7 @@ async def get_registros_por_rango(
 async def get_estadisticas(
     fecha: date = Query(default_factory=date.today),
     db: Session = Depends(get_db),
-    current_user = Depends(require_roles(["admin", "oficial_permanencia"]))
+    current_user = Depends(require_roles(ROLES_ESTADISTICAS))
 ):
     """Obtener estadísticas de asistencia para una fecha específica"""
     try:
@@ -276,7 +377,16 @@ async def get_estadisticas(
             if turno not in turnos_stats: turnos_stats[turno] = {"entradas": 0, "salidas": 0}
             if registro.tipo == "ENTRADA": turnos_stats[turno]["entradas"] += 1
             else: turnos_stats[turno]["salidas"] += 1
-        return {"fecha": fecha.isoformat(), "total_registros": len(registros), "entradas": entradas, "salidas": salidas, "personal_con_turno": personal_con_turno, "personal_registrado": personal_registrado, "porcentaje_asistencia": round((personal_registrado / personal_con_turno * 100), 2) if personal_con_turno > 0 else 0, "detalle_por_turno": turnos_stats}
+        return {
+            "fecha": fecha.isoformat(), 
+            "total_registros": len(registros), 
+            "entradas": entradas, 
+            "salidas": salidas, 
+            "personal_con_turno": personal_con_turno, 
+            "personal_registrado": personal_registrado, 
+            "porcentaje_asistencia": round((personal_registrado / personal_con_turno * 100), 2) if personal_con_turno > 0 else 0, 
+            "detalle_por_turno": turnos_stats
+        }
     except Exception as e:
         logger.error(f"Error en estadisticas: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error al obtener estadísticas: {str(e)}")
@@ -288,7 +398,7 @@ async def get_estadisticas(
 @router.get("/activos")
 async def get_personal_activo(
     db: Session = Depends(get_db),
-    current_user = Depends(require_roles(["admin", "oficial_permanencia"]))
+    current_user = Depends(require_roles(ROLES_PERSONAL_ACTIVO))
 ):
     """Obtener personal actualmente en el hospital"""
     try:
@@ -296,13 +406,21 @@ async def get_personal_activo(
         ahora_peru = get_peru_time()
         inicio_dia = datetime.combine(hoy, datetime.min.time())
         fin_dia = datetime.combine(hoy, datetime.max.time())
-        query = db.query(Asistencia).filter(Asistencia.tipo == "ENTRADA", Asistencia.timestamp >= inicio_dia, Asistencia.timestamp <= fin_dia)
+        query = db.query(Asistencia).filter(
+            Asistencia.tipo == "ENTRADA", 
+            Asistencia.timestamp >= inicio_dia, 
+            Asistencia.timestamp <= fin_dia
+        )
         query = aplicar_filtro_empresa(query, current_user, Asistencia)
         entradas_hoy = query.all()
         activos = []
         for entrada in entradas_hoy:
             entrada_timestamp = entrada.timestamp
-            salida_query = db.query(Asistencia).filter(Asistencia.personal_id == entrada.personal_id, Asistencia.tipo == "SALIDA", Asistencia.timestamp > entrada_timestamp)
+            salida_query = db.query(Asistencia).filter(
+                Asistencia.personal_id == entrada.personal_id, 
+                Asistencia.tipo == "SALIDA", 
+                Asistencia.timestamp > entrada_timestamp
+            )
             salida_despues = salida_query.first()
             if not salida_despues:
                 personal = db.query(Personal).filter(Personal.id == entrada.personal_id).first()
@@ -310,8 +428,21 @@ async def get_personal_activo(
                     diferencia = ahora_peru - entrada_timestamp
                     horas = diferencia.seconds // 3600
                     minutos = (diferencia.seconds % 3600) // 60
-                    activos.append({"personal_id": str(personal.id), "nombre": personal.nombre, "grado": personal.grado or "", "hora_entrada": entrada_timestamp.isoformat(), "turno": entrada.turno_codigo or "", "tiempo_en_hospital": f"{horas}h {minutos}m", "tipo_registro": entrada.tipo_registro or "QR"})
-        return {"total_activos": len(activos), "personal": activos, "fecha": hoy.isoformat(), "hora_consulta": ahora_peru.isoformat()}
+                    activos.append({
+                        "personal_id": str(personal.id), 
+                        "nombre": personal.nombre, 
+                        "grado": personal.grado or "", 
+                        "hora_entrada": entrada_timestamp.isoformat(), 
+                        "turno": entrada.turno_codigo or "", 
+                        "tiempo_en_hospital": f"{horas}h {minutos}m", 
+                        "tipo_registro": entrada.tipo_registro or "QR"
+                    })
+        return {
+            "total_activos": len(activos), 
+            "personal": activos, 
+            "fecha": hoy.isoformat(), 
+            "hora_consulta": ahora_peru.isoformat()
+        }
     except Exception as e:
         logger.error(f"Error en /activos: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error al obtener personal activo: {str(e)}")
@@ -335,7 +466,7 @@ def extraer_empleado_id_qr(payload: dict, db: Session) -> Optional[str]:
     return None
 
 # =====================================================
-# ENDPOINT: VALIDACIÓN QR DE ASISTENCIA
+# 🆕 ENDPOINT: VALIDACIÓN QR DE ASISTENCIA (CON SOPORTE VISITANTE)
 # =====================================================
 
 @router.post("/qr-validar")
@@ -343,64 +474,114 @@ async def validar_qr_asistencia(
     qr_data: str = Body(...),
     tipo: str = Body(...),
     db: Session = Depends(get_db),
-    current_user: Usuario = Depends(require_roles(["admin", "oficial_permanencia", "control_qr"]))
+    current_user: Usuario = Depends(require_roles(ROLES_REGISTRAR_ASISTENCIA))
 ):
-    """Valida QR de asistencia - SOPORTA FORMATO V1 Y V2"""
+    """
+    Valida QR de asistencia - SOPORTA FORMATO V1 Y V2
+    🆕 Acepta visitantes (t:v) sin requerir turno
+    🆕 admin_empresa y admin_cliente pueden validar
+    """
     try:
         decoded_str = base64.b64decode(qr_data).decode('utf-8')
         payload = json.loads(decoded_str)
         version = payload.get("v", "1")
+        es_visitante = payload.get("t") == "v"
+        
         empleado_id = extraer_empleado_id_qr(payload, db)
-        if not empleado_id: raise HTTPException(status_code=400, detail="QR_INVALIDO - No se pudo identificar al empleado")
+        if not empleado_id: 
+            raise HTTPException(status_code=400, detail="QR_INVALIDO - No se pudo identificar al empleado")
         
-        qr_registro = None
-        qr_id = None
-        expira_en = None
-        if version == "1" and "qr_id" in payload:
-            qr_id = payload["qr_id"]
-            qr_registro = db.query(QRRegistro).filter(QRRegistro.qr_id == qr_id).first()
-            if qr_registro: expira_en = qr_registro.expira_en
-        elif version == "2":
-            ahora_peru = get_peru_time()
-            qr_registro = db.query(QRRegistro).filter(QRRegistro.empleado_id == empleado_id, QRRegistro.expira_en > ahora_peru, QRRegistro.usado == False, QRRegistro.tipo == "asistencia").order_by(QRRegistro.generado_en.desc()).first()
-            if qr_registro:
-                qr_id = qr_registro.qr_id
-                expira_en = qr_registro.expira_en
-        
+        # 🆕 Buscar QR registrado
         ahora_peru = get_peru_time()
-        if expira_en:
-            if expira_en.tzinfo is None: expira_en = PERU_TZ.localize(expira_en)
-            if ahora_peru > expira_en: raise HTTPException(status_code=400, detail="QR_EXPIRADO")
-        if qr_registro and qr_registro.usado: raise HTTPException(status_code=400, detail="QR_YA_USADO")
+        qr_registro = None
+        
+        if version == "2":
+            qr_registro = db.query(QRRegistro).filter(
+                QRRegistro.empleado_id == empleado_id, 
+                QRRegistro.expira_en > ahora_peru, 
+                QRRegistro.usado == False
+            ).order_by(QRRegistro.generado_en.desc()).first()
+        
+        if qr_registro:
+            if qr_registro.expira_en.tzinfo is None: 
+                qr_registro.expira_en = PERU_TZ.localize(qr_registro.expira_en)
+            if ahora_peru > qr_registro.expira_en and not es_visitante: 
+                raise HTTPException(status_code=400, detail="QR_EXPIRADO")
         
         personal = db.query(Personal).filter(Personal.id == empleado_id).first()
-        if not personal: raise HTTPException(status_code=404, detail="EMPLEADO_NO_ENCONTRADO")
-        if current_user.empresa_id and current_user.rol_global != "super_admin":
-            if personal.empresa_id != current_user.empresa_id: raise HTTPException(status_code=403, detail="EMPLEADO_NO_AUTORIZADO")
-        if not personal.activo: raise HTTPException(status_code=400, detail="EMPLEADO_INACTIVO")
+        if not personal: 
+            raise HTTPException(status_code=404, detail="EMPLEADO_NO_ENCONTRADO")
+        
+        # 🆕 Verificar permiso de empresa
+        verificar_permiso_empresa(current_user, personal, "registrar asistencia")
+        
+        if not personal.activo: 
+            raise HTTPException(status_code=400, detail="EMPLEADO_INACTIVO")
         
         hoy = ahora_peru.date()
-        planificacion = db.query(Planificacion).filter(Planificacion.personal_id == empleado_id, Planificacion.fecha == hoy).first()
-        if not planificacion: raise HTTPException(status_code=400, detail="SIN_TURNO")
+        turno_codigo = "VISITANTE" if es_visitante else None
         
+        # 🆕 Para visitantes: sin validación de turno
+        if not es_visitante:
+            planificacion = db.query(Planificacion).filter(
+                Planificacion.personal_id == empleado_id, 
+                Planificacion.fecha == hoy
+            ).first()
+            if not planificacion: 
+                raise HTTPException(status_code=400, detail="SIN_TURNO")
+            turno_codigo = planificacion.turno_codigo
+        
+        # Validar tipo de registro (ENTRADA/SALIDA)
         inicio_dia = datetime.combine(hoy, datetime.min.time())
-        ultimo_registro = db.query(Asistencia).filter(Asistencia.personal_id == empleado_id, Asistencia.timestamp >= inicio_dia).order_by(Asistencia.timestamp.desc()).first()
-        tipo_permitido = "ENTRADA"
-        if ultimo_registro and ultimo_registro.tipo == "ENTRADA": tipo_permitido = "SALIDA"
-        if tipo != tipo_permitido: raise HTTPException(status_code=400, detail=f"Debe registrar {tipo_permitido} primero")
+        ultimo_registro = db.query(Asistencia).filter(
+            Asistencia.personal_id == empleado_id, 
+            Asistencia.timestamp >= inicio_dia
+        ).order_by(Asistencia.timestamp.desc()).first()
         
-        incidencias = calcular_incidencias(tipo, ahora_peru, planificacion.turno_codigo, hoy)
-        asistencia = Asistencia(personal_id=empleado_id, timestamp=ahora_peru, tipo=tipo, tipo_registro="QR", turno_codigo=planificacion.turno_codigo, created_by=current_user.id, empresa_id=current_user.empresa_id if current_user.empresa_id else None)
+        tipo_permitido = "ENTRADA"
+        if ultimo_registro and ultimo_registro.tipo == "ENTRADA": 
+            tipo_permitido = "SALIDA"
+        if tipo != tipo_permitido: 
+            raise HTTPException(status_code=400, detail=f"Debe registrar {tipo_permitido} primero")
+        
+        incidencias = calcular_incidencias(tipo, ahora_peru, turno_codigo, hoy)
+        
+        asistencia = Asistencia(
+            personal_id=empleado_id, 
+            timestamp=ahora_peru, 
+            tipo=tipo, 
+            tipo_registro="QR", 
+            turno_codigo=turno_codigo, 
+            created_by=current_user.id, 
+            empresa_id=current_user.empresa_id if current_user.empresa_id else None
+        )
         db.add(asistencia)
         db.commit()
         db.refresh(asistencia)
+        
         if qr_registro:
             qr_registro.usado = True
             qr_registro.usado_en = ahora_peru
             qr_registro.usado_por = current_user.id
             db.commit()
-        return {"valido": True, "empleado_id": str(empleado_id), "empleado_nombre": personal.nombre, "tipo": tipo, "timestamp": asistencia.timestamp.isoformat(), "turno": planificacion.turno_codigo, "formato": version, "incidencias": incidencias, "mensaje": generar_mensaje_incidencia(incidencias, tipo)}
-    except HTTPException: raise
+        
+        tipo_persona = "Visitante" if es_visitante else "Trabajador"
+        logger.info(f"✅ Asistencia QR registrada ({tipo_persona}): {personal.nombre} - {tipo}")
+        
+        return {
+            "valido": True, 
+            "empleado_id": str(empleado_id), 
+            "empleado_nombre": personal.nombre, 
+            "tipo": tipo, 
+            "tipo_persona": tipo_persona,
+            "timestamp": asistencia.timestamp.isoformat(), 
+            "turno": turno_codigo, 
+            "formato": version, 
+            "incidencias": incidencias, 
+            "mensaje": generar_mensaje_incidencia(incidencias, tipo)
+        }
+    except HTTPException: 
+        raise
     except json.JSONDecodeError as e:
         logger.error(f"Error decodificando JSON del QR: {e}")
         raise HTTPException(status_code=400, detail="QR_INVALIDO")
@@ -409,38 +590,92 @@ async def validar_qr_asistencia(
         raise HTTPException(status_code=400, detail=f"Error al validar QR: {str(e)}")
 
 # =====================================================
-# ENDPOINT: REGISTRO DIRECTO (SIN QR)
+# 🆕 ENDPOINT: REGISTRO DIRECTO (SIN QR) - CORREGIDO
 # =====================================================
 
 @router.post("/registro-directo")
 async def registro_directo(
     personal_id: UUID = Body(...),
     tipo: str = Body(...),
+    empresa_id: Optional[UUID] = Body(None),  # 🆕 Parámetro opcional
     db: Session = Depends(get_db),
-    current_user: Usuario = Depends(require_roles(["admin", "oficial_permanencia", "control_qr"]))
+    current_user: Usuario = Depends(require_roles(ROLES_REGISTRAR_ASISTENCIA))
 ):
-    """Registro directo de asistencia - SIN QR"""
+    """
+    Registro directo de asistencia - SIN QR
+    🆕 admin_empresa y admin_cliente pueden registrar
+    🆕 Soporta visitantes (sin validación de turno)
+    """
     try:
         personal = db.query(Personal).filter(Personal.id == personal_id).first()
-        if not personal: raise HTTPException(status_code=404, detail="Personal no encontrado")
-        if current_user.empresa_id and current_user.rol_global != "super_admin":
-            if personal.empresa_id != current_user.empresa_id: raise HTTPException(status_code=403, detail="Este personal no pertenece a su empresa")
-        if tipo not in ["ENTRADA", "SALIDA"]: raise HTTPException(status_code=400, detail="Tipo debe ser ENTRADA o SALIDA")
-        hoy = date.today()
-        planificacion = db.query(Planificacion).filter(Planificacion.personal_id == personal_id, Planificacion.fecha == hoy).first()
-        if not planificacion: raise HTTPException(status_code=400, detail="SIN_TURNO")
-        inicio_dia = datetime.combine(hoy, datetime.min.time())
-        ultimo = db.query(Asistencia).filter(Asistencia.personal_id == personal_id, Asistencia.timestamp >= inicio_dia).order_by(Asistencia.timestamp.desc()).first()
-        if ultimo and ultimo.tipo == "ENTRADA" and tipo != "SALIDA": raise HTTPException(status_code=400, detail="Debe registrar SALIDA primero")
-        if not ultimo and tipo != "ENTRADA": raise HTTPException(status_code=400, detail="Debe registrar ENTRADA primero")
+        if not personal: 
+            raise HTTPException(status_code=404, detail="Personal no encontrado")
+        
+        # 🆕 Verificar permiso de empresa
+        verificar_permiso_empresa(current_user, personal, "registrar asistencia")
+        
+        if tipo not in ["ENTRADA", "SALIDA"]: 
+            raise HTTPException(status_code=400, detail="Tipo debe ser ENTRADA o SALIDA")
+        
         ahora_peru = get_peru_time()
-        incidencias = calcular_incidencias(tipo, ahora_peru, planificacion.turno_codigo, hoy)
-        asistencia = Asistencia(personal_id=personal_id, timestamp=ahora_peru, tipo=tipo, tipo_registro="MANUAL", turno_codigo=planificacion.turno_codigo, created_by=current_user.id, empresa_id=current_user.empresa_id if current_user.empresa_id else None)
+        hoy = ahora_peru.date()
+        
+        # 🆕 Verificar si es visitante
+        es_visitante = "visitante" in (personal.roles or [])
+        turno_codigo = "VISITANTE" if es_visitante else None
+        
+        if not es_visitante:
+            planificacion = db.query(Planificacion).filter(
+                Planificacion.personal_id == personal_id, 
+                Planificacion.fecha == hoy
+            ).first()
+            if not planificacion: 
+                raise HTTPException(status_code=400, detail="SIN_TURNO")
+            turno_codigo = planificacion.turno_codigo
+        
+        # Validar secuencia ENTRADA/SALIDA
+        inicio_dia = datetime.combine(hoy, datetime.min.time())
+        ultimo = db.query(Asistencia).filter(
+            Asistencia.personal_id == personal_id, 
+            Asistencia.timestamp >= inicio_dia
+        ).order_by(Asistencia.timestamp.desc()).first()
+        
+        if ultimo and ultimo.tipo == "ENTRADA" and tipo != "SALIDA": 
+            raise HTTPException(status_code=400, detail="Debe registrar SALIDA primero")
+        if not ultimo and tipo != "ENTRADA": 
+            raise HTTPException(status_code=400, detail="Debe registrar ENTRADA primero")
+        
+        incidencias = calcular_incidencias(tipo, ahora_peru, turno_codigo, hoy)
+        
+        asistencia = Asistencia(
+            personal_id=personal_id, 
+            timestamp=ahora_peru, 
+            tipo=tipo, 
+            tipo_registro="MANUAL", 
+            turno_codigo=turno_codigo, 
+            created_by=current_user.id, 
+            empresa_id=current_user.empresa_id if current_user.empresa_id else None
+        )
         db.add(asistencia)
         db.commit()
         db.refresh(asistencia)
-        return {"success": True, "mensaje": generar_mensaje_incidencia(incidencias, tipo), "fecha": asistencia.timestamp.isoformat(), "tipo": tipo, "personal_id": str(personal_id), "personal_nombre": personal.nombre, "turno": planificacion.turno_codigo, "incidencias": incidencias}
-    except HTTPException: raise
+        
+        tipo_persona = "Visitante" if es_visitante else "Trabajador"
+        logger.info(f"✅ Asistencia directa registrada ({tipo_persona}): {personal.nombre} - {tipo}")
+        
+        return {
+            "success": True, 
+            "mensaje": generar_mensaje_incidencia(incidencias, tipo), 
+            "fecha": asistencia.timestamp.isoformat(), 
+            "tipo": tipo, 
+            "tipo_persona": tipo_persona,
+            "personal_id": str(personal_id), 
+            "personal_nombre": personal.nombre, 
+            "turno": turno_codigo, 
+            "incidencias": incidencias
+        }
+    except HTTPException: 
+        raise
     except Exception as e:
         logger.error(f"Error en registro-directo: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error al registrar asistencia: {str(e)}")
@@ -456,34 +691,74 @@ async def registro_manual(
     justificacion: Optional[str] = Body(None),
     fecha_registro: Optional[datetime] = Body(None),
     db: Session = Depends(get_db),
-    current_user: Usuario = Depends(require_roles(["admin", "oficial_permanencia", "control_qr"]))
+    current_user: Usuario = Depends(require_roles(ROLES_REGISTRAR_ASISTENCIA))
 ):
     """Registro manual de asistencia con justificación"""
     try:
         personal = db.query(Personal).filter(Personal.id == personal_id).first()
-        if not personal: raise HTTPException(status_code=404, detail="Personal no encontrado")
-        if current_user.empresa_id and current_user.rol_global != "super_admin":
-            if personal.empresa_id != current_user.empresa_id: raise HTTPException(status_code=403, detail="Este personal no pertenece a su empresa")
-        if tipo not in ["ENTRADA", "SALIDA"]: raise HTTPException(status_code=400, detail="Tipo debe ser ENTRADA o SALIDA")
+        if not personal: 
+            raise HTTPException(status_code=404, detail="Personal no encontrado")
+        
+        verificar_permiso_empresa(current_user, personal, "registrar asistencia")
+        
+        if tipo not in ["ENTRADA", "SALIDA"]: 
+            raise HTTPException(status_code=400, detail="Tipo debe ser ENTRADA o SALIDA")
+        
         timestamp = fecha_registro if fecha_registro else get_peru_time()
-        if timestamp.tzinfo is None: timestamp = PERU_TZ.localize(timestamp)
+        if timestamp.tzinfo is None: 
+            timestamp = PERU_TZ.localize(timestamp)
+        
         fecha_registro_date = timestamp.date()
-        planificacion = db.query(Planificacion).filter(Planificacion.personal_id == personal_id, Planificacion.fecha == fecha_registro_date).first()
-        if not planificacion: raise HTTPException(status_code=400, detail=f"SIN_TURNO - No tiene turno asignado para {fecha_registro_date}")
-        incidencias = calcular_incidencias(tipo, timestamp, planificacion.turno_codigo, fecha_registro_date)
-        asistencia = Asistencia(personal_id=personal_id, timestamp=timestamp, tipo=tipo, tipo_registro="MANUAL", turno_codigo=planificacion.turno_codigo, created_by=current_user.id, empresa_id=current_user.empresa_id if current_user.empresa_id else None)
-        if hasattr(asistencia, 'justificacion') and justificacion: asistencia.justificacion = justificacion
+        
+        es_visitante = "visitante" in (personal.roles or [])
+        turno_codigo = "VISITANTE" if es_visitante else None
+        
+        if not es_visitante:
+            planificacion = db.query(Planificacion).filter(
+                Planificacion.personal_id == personal_id, 
+                Planificacion.fecha == fecha_registro_date
+            ).first()
+            if not planificacion: 
+                raise HTTPException(status_code=400, detail=f"SIN_TURNO - No tiene turno asignado para {fecha_registro_date}")
+            turno_codigo = planificacion.turno_codigo
+        
+        incidencias = calcular_incidencias(tipo, timestamp, turno_codigo, fecha_registro_date)
+        
+        asistencia = Asistencia(
+            personal_id=personal_id, 
+            timestamp=timestamp, 
+            tipo=tipo, 
+            tipo_registro="MANUAL", 
+            turno_codigo=turno_codigo, 
+            created_by=current_user.id, 
+            empresa_id=current_user.empresa_id if current_user.empresa_id else None
+        )
+        if hasattr(asistencia, 'justificacion') and justificacion: 
+            asistencia.justificacion = justificacion
+        
         db.add(asistencia)
         db.commit()
         db.refresh(asistencia)
-        return {"success": True, "mensaje": generar_mensaje_incidencia(incidencias, tipo), "fecha": asistencia.timestamp.isoformat(), "tipo": tipo, "personal_id": str(personal_id), "personal_nombre": personal.nombre, "turno": planificacion.turno_codigo, "incidencias": incidencias, "justificacion": justificacion}
-    except HTTPException: raise
+        
+        return {
+            "success": True, 
+            "mensaje": generar_mensaje_incidencia(incidencias, tipo), 
+            "fecha": asistencia.timestamp.isoformat(), 
+            "tipo": tipo, 
+            "personal_id": str(personal_id), 
+            "personal_nombre": personal.nombre, 
+            "turno": turno_codigo, 
+            "incidencias": incidencias, 
+            "justificacion": justificacion
+        }
+    except HTTPException: 
+        raise
     except Exception as e:
         logger.error(f"Error en registro-manual: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error al registrar asistencia manual: {str(e)}")
 
 # =====================================================
-# ENDPOINT: ASISTENCIA POR PERSONAL (AHORA ACEPTA VISITANTE)
+# 🆕 ENDPOINT: ASISTENCIA POR PERSONAL (CORREGIDO)
 # =====================================================
 
 @router.get("/personal/{personal_id}")
@@ -496,35 +771,66 @@ async def get_asistencia_personal(
 ):
     """
     Obtener historial de asistencia de un empleado/visitante específico.
-    ACEPTA: admin, oficial_permanencia, jefe_area, control_qr, VISITANTE
+    🆕 ACEPTA: admin, admin_empresa, admin_cliente, oficial_permanencia, 
+               jefaturas, control_qr, VISITANTE
     """
     try:
         personal = db.query(Personal).filter(Personal.id == personal_id).first()
-        if not personal: raise HTTPException(status_code=404, detail="Personal no encontrado")
+        if not personal: 
+            raise HTTPException(status_code=404, detail="Personal no encontrado")
         
         # Verificar que el usuario solo pueda ver SU PROPIA asistencia si es visitante
-        es_visitante = "visitante" in (current_user.roles or []) and "admin" not in (current_user.roles or [])
-        if es_visitante and str(current_user.personal_id) != str(personal_id):
+        roles_usuario = current_user.roles or []
+        es_visitante = "visitante" in [r.lower() for r in roles_usuario if isinstance(r, str)]
+        es_admin = any(r in [r2.lower() for r2 in roles_usuario if isinstance(r2, str)] for r in ["admin", "admin_empresa", "admin_cliente"])
+        
+        if es_visitante and not es_admin and str(current_user.personal_id) != str(personal_id):
             raise HTTPException(status_code=403, detail="Solo puede ver su propia asistencia")
         
-        if current_user.empresa_id and current_user.rol_global != "super_admin":
-            if personal.empresa_id != current_user.empresa_id: raise HTTPException(status_code=403, detail="Este personal no pertenece a su empresa")
+        verificar_permiso_empresa(current_user, personal, "ver asistencia")
         
-        if not fecha_fin: fecha_fin = date.today()
-        if not fecha_inicio: fecha_inicio = fecha_fin - timedelta(days=30)
+        if not fecha_fin: 
+            fecha_fin = date.today()
+        if not fecha_inicio: 
+            fecha_inicio = fecha_fin - timedelta(days=30)
+        
         inicio = datetime.combine(fecha_inicio, datetime.min.time())
         fin = datetime.combine(fecha_fin, datetime.max.time())
-        query = db.query(Asistencia).filter(Asistencia.personal_id == personal_id, Asistencia.timestamp >= inicio, Asistencia.timestamp <= fin)
+        
+        query = db.query(Asistencia).filter(
+            Asistencia.personal_id == personal_id, 
+            Asistencia.timestamp >= inicio, 
+            Asistencia.timestamp <= fin
+        )
         query = aplicar_filtro_empresa(query, current_user, Asistencia)
         registros = query.order_by(Asistencia.timestamp.desc()).all()
+        
         resultado = []
         for r in registros:
             timestamp_peru = r.timestamp
-            if timestamp_peru.tzinfo is None: timestamp_peru = pytz.UTC.localize(timestamp_peru).astimezone(PERU_TZ)
-            else: timestamp_peru = timestamp_peru.astimezone(PERU_TZ)
-            resultado.append({"id": str(r.id), "fecha": timestamp_peru.date().isoformat(), "hora": timestamp_peru.time().isoformat(), "timestamp": timestamp_peru.isoformat(), "tipo": r.tipo, "tipo_registro": r.tipo_registro, "turno": r.turno_codigo})
-        return {"personal_id": str(personal_id), "personal_nombre": personal.nombre, "periodo": {"inicio": fecha_inicio.isoformat(), "fin": fecha_fin.isoformat()}, "total_registros": len(resultado), "registros": resultado}
-    except HTTPException: raise
+            if timestamp_peru.tzinfo is None: 
+                timestamp_peru = pytz.UTC.localize(timestamp_peru).astimezone(PERU_TZ)
+            else: 
+                timestamp_peru = timestamp_peru.astimezone(PERU_TZ)
+            resultado.append({
+                "id": str(r.id), 
+                "fecha": timestamp_peru.date().isoformat(), 
+                "hora": timestamp_peru.time().isoformat(), 
+                "timestamp": timestamp_peru.isoformat(), 
+                "tipo": r.tipo, 
+                "tipo_registro": r.tipo_registro, 
+                "turno": r.turno_codigo
+            })
+        
+        return {
+            "personal_id": str(personal_id), 
+            "personal_nombre": personal.nombre, 
+            "periodo": {"inicio": fecha_inicio.isoformat(), "fin": fecha_fin.isoformat()}, 
+            "total_registros": len(resultado), 
+            "registros": resultado
+        }
+    except HTTPException: 
+        raise
     except Exception as e:
         logger.error(f"Error en get_asistencia_personal: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error al obtener historial: {str(e)}")
@@ -539,7 +845,7 @@ async def reporte_asistencia(
     fecha_fin: date = Query(...),
     area_id: Optional[UUID] = Query(None),
     db: Session = Depends(get_db),
-    current_user = Depends(require_roles(["admin", "oficial_permanencia"]))
+    current_user = Depends(require_roles(ROLES_ESTADISTICAS))
 ):
     """Generar reporte de asistencia por rango de fechas"""
     try:
@@ -551,11 +857,18 @@ async def reporte_asistencia(
         estadisticas_por_dia = {}
         for registro in registros:
             fecha_str = registro.timestamp.date().isoformat()
-            if fecha_str not in estadisticas_por_dia: estadisticas_por_dia[fecha_str] = {"entradas": 0, "salidas": 0, "total": 0}
-            if registro.tipo == "ENTRADA": estadisticas_por_dia[fecha_str]["entradas"] += 1
-            else: estadisticas_por_dia[fecha_str]["salidas"] += 1
+            if fecha_str not in estadisticas_por_dia: 
+                estadisticas_por_dia[fecha_str] = {"entradas": 0, "salidas": 0, "total": 0}
+            if registro.tipo == "ENTRADA": 
+                estadisticas_por_dia[fecha_str]["entradas"] += 1
+            else: 
+                estadisticas_por_dia[fecha_str]["salidas"] += 1
             estadisticas_por_dia[fecha_str]["total"] += 1
-        return {"periodo": {"inicio": fecha_inicio.isoformat(), "fin": fecha_fin.isoformat()}, "total_registros": len(registros), "estadisticas_por_dia": estadisticas_por_dia}
+        return {
+            "periodo": {"inicio": fecha_inicio.isoformat(), "fin": fecha_fin.isoformat()}, 
+            "total_registros": len(registros), 
+            "estadisticas_por_dia": estadisticas_por_dia
+        }
     except Exception as e:
         logger.error(f"Error en reporte_asistencia: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error al generar reporte: {str(e)}")
