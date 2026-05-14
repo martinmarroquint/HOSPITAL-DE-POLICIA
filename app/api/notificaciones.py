@@ -1,5 +1,5 @@
 # app/api/notificaciones.py
-# VERSIÓN FINAL - SIN DATA, CON SQLALCHEMY PURO
+# VERSIÓN FINAL - ROLES ACTUALIZADOS
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
@@ -73,7 +73,7 @@ def crear_notificacion_masiva(
 async def listar_notificaciones(
     limite: int = Query(20, ge=1, le=50),
     db: Session = Depends(get_db),
-    current_user: Usuario = Depends(require_roles(["admin", "jefe_area", "usuario"]))
+    current_user: Usuario = Depends(require_roles(["admin_empresa", "jefe", "usuario", "visitante", "escaner"]))
 ):
     notificaciones = db.query(Notificacion).filter(
         Notificacion.usuario_id == current_user.id
@@ -99,7 +99,7 @@ async def listar_notificaciones(
 @router.get("/no-leidas/count")
 async def contar_no_leidas(
     db: Session = Depends(get_db),
-    current_user: Usuario = Depends(require_roles(["admin", "jefe_area", "usuario"]))
+    current_user: Usuario = Depends(require_roles(["admin_empresa", "jefe", "usuario", "visitante", "escaner"]))
 ):
     total = db.query(Notificacion).filter(
         Notificacion.usuario_id == current_user.id
@@ -118,7 +118,7 @@ async def contar_no_leidas(
 async def marcar_como_leida(
     id: UUID,
     db: Session = Depends(get_db),
-    current_user: Usuario = Depends(require_roles(["admin", "jefe_area", "usuario"]))
+    current_user: Usuario = Depends(require_roles(["admin_empresa", "jefe", "usuario", "visitante", "escaner"]))
 ):
     notificacion = db.query(Notificacion).filter(
         Notificacion.id == id,
@@ -137,7 +137,7 @@ async def marcar_como_leida(
 @router.put("/leer-todas")
 async def marcar_todas_como_leidas(
     db: Session = Depends(get_db),
-    current_user: Usuario = Depends(require_roles(["admin", "jefe_area", "usuario"]))
+    current_user: Usuario = Depends(require_roles(["admin_empresa", "jefe", "usuario", "visitante", "escaner"]))
 ):
     ahora = datetime.now()
     notificaciones = db.query(Notificacion).filter(
@@ -157,7 +157,7 @@ async def marcar_todas_como_leidas(
 async def eliminar_notificacion(
     id: UUID,
     db: Session = Depends(get_db),
-    current_user: Usuario = Depends(require_roles(["admin", "jefe_area", "usuario"]))
+    current_user: Usuario = Depends(require_roles(["admin_empresa", "jefe", "usuario", "visitante", "escaner"]))
 ):
     notificacion = db.query(Notificacion).filter(
         Notificacion.id == id,

@@ -1,5 +1,5 @@
 # api/personal.py
-# VERSIÓN CORREGIDA - MANEJO CORRECTO DE CAMPOS VACÍOS Y NULL
+# VERSIÓN FINAL - ALINEADO CON roles.py
 
 from fastapi import APIRouter, Depends, HTTPException, status, Query, UploadFile, File
 from fastapi.responses import StreamingResponse
@@ -31,6 +31,17 @@ from app.schemas.personal import (
     CargaMasivaItem, CargaMasivaResponse,
     VerificarRelacionesResponse, VerificarDNIResponse,
     EliminarResponse, JefaturaResumen
+)
+from app.utils.roles import (
+    ROLES_SISTEMA, 
+    TODOS_LOS_ROLES, 
+    ROLES_ADMIN, 
+    ROLES_JEFE, 
+    ROLES_JEFATURA,
+    ROLES_PUEDEN_GESTIONAR_USUARIOS,
+    ROLES_PUEDEN_VER_REPORTES,
+    ROLES_SOLO_LECTURA,
+    ROLES_SOLO_ESCANER
 )
 
 logger = logging.getLogger(__name__)
@@ -96,17 +107,6 @@ GRADOS_VALIDOS = [
     'MEDICO', 'SERUM', 'ENFERMERA', 'TECNICO', 'ADMINISTRATIVO', 'PENDIENTE'
 ]
 
-ROLES_VALIDOS = [
-    'admin', 'admin_empresa', 'admin_cliente',
-    'jefe_grupo', 'jefe_area', 'jefe_departamento',
-    'jefe_direccion', 'recursos_humanos', 'oficina_central',
-    'oficial_permanencia', 'control_qr', 'usuario', 'visitante'
-]
-
-ROLES_JEFATURA = ['jefe_grupo', 'jefe_area', 'jefe_departamento', 'jefe_direccion']
-ROLES_ACCESO_GLOBAL = ['admin', 'admin_empresa', 'admin_cliente', 'recursos_humanos', 'oficina_central', 'oficial_permanencia', 'control_qr']
-ROLES_ADMIN = ['admin', 'admin_empresa', 'admin_cliente']
-
 # =====================================================
 # FUNCIONES AUXILIARES
 # =====================================================
@@ -136,6 +136,20 @@ def get_roles_normalizados(roles) -> List[str]:
 def get_roles_usuario(user: Usuario) -> List[str]:
     return get_roles_normalizados(user.roles)
 
+def es_admin(user: Usuario) -> bool:
+    """Verifica si el usuario tiene rol de administrador"""
+    roles = get_roles_usuario(user)
+    return any(r in ROLES_ADMIN for r in roles)
+
+def es_jefe(user: Usuario) -> bool:
+    """Verifica si el usuario tiene rol de jefe"""
+    roles = get_roles_usuario(user)
+    return any(r in ROLES_JEFE for r in roles)
+
+def tiene_acceso_global(user: Usuario) -> bool:
+    """Verifica si el usuario tiene acceso global (admin o jefe)"""
+    return es_admin(user) or es_jefe(user)
+
 def generar_email_interno(nombre_completo: str, dni: str = None, dominio: str = None) -> str:
     dominio_final = dominio or "sistema.com"
     if not nombre_completo or nombre_completo == 'PENDIENTE':
@@ -159,21 +173,99 @@ def obtener_dominio_empresa(db: Session, empresa_id: UUID) -> str:
         return empresa.dominio_email or empresa.subdominio
     return "sistema.com"
 
-def procesar_areas_jefatura(areas_que_jefatura: Optional[List], areas_jefatura: Optional[Dict]) -> Dict[str, List[str]]:
-    resultado = {'grupo': [], 'area': [], 'departamento': [], 'direccion': []}
-    if areas_jefatura and isinstance(areas_jefatura, dict):
-        for tipo in resultado.keys():
-            if tipo in areas_jefatura and isinstance(areas_jefatura[tipo], list):
-                resultado[tipo].extend(areas_jefatura[tipo])
-    if areas_que_jefatura and isinstance(areas_que_jefatura, list):
-        prefijo_map = {'grupo': 'grupo:', 'area': 'area:', 'departamento': 'depto:', 'direccion': 'direccion:'}
-        for tipo, prefijo in prefijo_map.items():
-            for item in areas_que_jefatura:
+def get_areas_jefatura_from_data(personal_data) -> List[str]:
+    """Extrae las áreas de jefatura de los datos de creación/actualización"""
+    areas = []
+    
+    if hasattr(personal_data, 'areas_que_jefatura') and personal_data.areas_que_jefatura:
+        if isinstance(personal_data.areas_que_jefatura, list):
+            for item in personal_data.areas_que_jefatura:
                 if isinstance(item, str):
-                    if item.startswith(prefijo): resultado[tipo].append(item.replace(prefijo, ''))
-                    elif ':' not in item and tipo == 'area': resultado[tipo].append(item)
-    for tipo in resultado: resultado[tipo] = list(set(resultado[tipo]))
-    return resultado
+                    if ':' in item:
+                        areas.append(item.split(':', 1)[1])
+                    else:
+                        areas.append(item)
+    
+    if hasattr(personal_data, 'areas_jefatura') and personal_data.areas_jefatura:
+        if isinstance(personal_data.areas_jefatura, dict):
+            for tipo, areas_lista in personal_data.areas_jefatura.items():
+                if isinstance(areas_lista, list):
+                    areas.extend(areas_lista)
+    
+    # Si no hay áreas explícitas pero tiene área asignada
+    if not areas and hasattr(personal_data, 'area') and personal_data.area:
+        areas = [personal_data.area]
+    
+    return list(set(areas))
+
+def get_areas_jefatura(jefe: Personal) -> List[str]:
+    """
+    Obtiene todas las áreas que están bajo la jefatura de una persona.
+    Un jefe jefatura todo lo que está debajo de él en la jerarquía organizacional.
+    """
+    if not jefe:
+        return []
+    
+    areas = []
+    
+    if jefe.areas_que_jefatura and isinstance(jefe.areas_que_jefatura, list):
+        for item in jefe.areas_que_jefatura:
+            if isinstance(item, str):
+                if ':' in item:
+                    areas.append(item.split(':', 1)[1])
+                else:
+                    areas.append(item)
+    
+    if jefe.areas_jefatura and isinstance(jefe.areas_jefatura, dict):
+        for tipo, areas_lista in jefe.areas_jefatura.items():
+            if isinstance(areas_lista, list):
+                areas.extend(areas_lista)
+    
+    # Si no tiene áreas explícitas pero tiene un área asignada, jefatura esa área
+    if not areas and jefe.area:
+        areas = [jefe.area]
+    
+    return list(set(areas))
+
+def get_subordinados(db: Session, jefe: Personal) -> List[Personal]:
+    """
+    Obtiene todos los subordinados de un jefe según la jerarquía.
+    Un jefe jefatura todo lo que está debajo de él.
+    """
+    areas = get_areas_jefatura(jefe)
+    
+    if not areas:
+        return []
+    
+    subordinados = db.query(Personal).filter(
+        Personal.activo == True,
+        Personal.area.in_(areas),
+        Personal.id != jefe.id
+    ).all()
+    
+    return subordinados
+
+def puede_acceder_a_personal(current_user: Usuario, personal: Personal, db: Session) -> bool:
+    """Verifica si el usuario actual puede acceder a un personal específico"""
+    roles_usuario = get_roles_usuario(current_user)
+    
+    # Admin puede ver todo
+    if any(r in ROLES_ADMIN for r in roles_usuario):
+        return True
+    
+    # El usuario puede verse a sí mismo
+    if str(current_user.personal_id) == str(personal.id):
+        return True
+    
+    # Jefe puede ver a sus subordinados
+    if any(r in ROLES_JEFE for r in roles_usuario):
+        jefe = db.query(Personal).filter(Personal.id == current_user.personal_id).first()
+        if jefe:
+            areas = get_areas_jefatura(jefe)
+            if personal.area in areas:
+                return True
+    
+    return False
 
 # =====================================================
 # ENDPOINTS PRINCIPALES
@@ -190,7 +282,7 @@ async def listar_personal(
     limit: int = Query(100),
     offset: int = Query(0),
     db: Session = Depends(get_db),
-    current_user: Usuario = Depends(require_roles(["admin", "admin_empresa", "admin_cliente", "jefe_area", "usuario", "visitante"]))
+    current_user: Usuario = Depends(require_roles(TODOS_LOS_ROLES))
 ):
     cache_key = get_cache_key(str(current_user.id), area, grado, busqueda)
     if offset == 0 and limit == 100 and cache_key in personal_cache:
@@ -198,22 +290,22 @@ async def listar_personal(
         if datetime.now() - timestamp < timedelta(seconds=cache_timeout):
             return cached_data[:limit]
     
-    query = db.query(Personal)
+    query = db.query(Personal).filter(
+    Personal.dni != '00000001',  # DNI del super admin
+    Personal.dni != '00000000',  # DNI de respaldo
+    ~Personal.nombre.ilike('%SUPER ADMINISTRADOR%')  # Por nombre
+)
     
-    # Filtro por empresa_id (parámetro explícito o del usuario)
+    # Filtro por empresa_id
     if empresa_id:
         query = query.filter(Personal.empresa_id == empresa_id)
-    elif current_user.empresa_id and current_user.rol_global != "super_admin":
+    elif current_user.empresa_id:
         query = query.filter(Personal.empresa_id == current_user.empresa_id)
     
     roles_usuario = get_roles_usuario(current_user)
-    es_usuario_basico = "usuario" in roles_usuario
-    es_visitante_user = es_visitante(roles_usuario)
     
-    # CORREGIDO: incluye admin_empresa y admin_cliente como roles elevados
-    tiene_rol_elevado = any(r in roles_usuario for r in ROLES_ACCESO_GLOBAL + ROLES_JEFATURA)
-    
-    if (es_usuario_basico or es_visitante_user) and not tiene_rol_elevado:
+    # Usuario básico o visitante solo se ve a sí mismo
+    if not tiene_acceso_global(current_user) and not any(r in ROLES_SOLO_LECTURA for r in roles_usuario if r not in ROLES_SOLO_ESCANER):
         if current_user.personal_id:
             personal = query.filter(Personal.id == current_user.personal_id).first()
             result = [personal] if personal else []
@@ -221,137 +313,218 @@ async def listar_personal(
             return result
         return []
     
+    # Jefe ve a todos sus subordinados (y a sí mismo)
+    if es_jefe(current_user) and not es_admin(current_user):
+        jefe = db.query(Personal).filter(Personal.id == current_user.personal_id).first()
+        if jefe:
+            areas_jefatura = get_areas_jefatura(jefe)
+            if areas_jefatura:
+                query = query.filter(
+                    or_(
+                        Personal.id == jefe.id,
+                        Personal.area.in_(areas_jefatura)
+                    )
+                )
+    
     if area: query = query.filter(Personal.area == area)
     if grado: query = query.filter(Personal.grado == grado)
     if activo is not None: query = query.filter(Personal.activo == activo)
-    elif not incluir_inactivos and not any(r in roles_usuario for r in ROLES_ADMIN):
+    elif not incluir_inactivos and not es_admin(current_user):
         query = query.filter(Personal.activo == True)
     if busqueda:
         busqueda_pattern = f"%{busqueda}%"
-        query = query.filter(or_(Personal.nombre.ilike(busqueda_pattern), Personal.dni.ilike(busqueda_pattern), Personal.cip.ilike(busqueda_pattern)))
-    
-    # CORREGIDO: no filtrar por jefatura si es admin_empresa o admin_cliente
-    if any(r in roles_usuario for r in ROLES_JEFATURA) and not any(r in roles_usuario for r in ROLES_ADMIN):
-        jefe = db.query(Personal).filter(Personal.id == current_user.personal_id).first()
-        if jefe:
-            areas_jefatura = procesar_areas_jefatura(jefe.areas_que_jefatura, jefe.areas_jefatura)
-            todas_areas = []
-            for areas in areas_jefatura.values(): todas_areas.extend(areas)
-            if jefe.area and not todas_areas: todas_areas = [jefe.area]
-            if todas_areas: query = query.filter(Personal.area.in_(todas_areas))
+        query = query.filter(
+            or_(
+                Personal.nombre.ilike(busqueda_pattern),
+                Personal.dni.ilike(busqueda_pattern),
+                Personal.cip.ilike(busqueda_pattern)
+            )
+        )
     
     total = query.count()
     resultados = query.order_by(Personal.area, Personal.grado, Personal.nombre).offset(offset).limit(limit).all()
-    if offset == 0: personal_cache[cache_key] = (resultados, datetime.now())
+    if offset == 0: 
+        personal_cache[cache_key] = (resultados, datetime.now())
     return resultados
 
 
 @router.get("/me/jefatura", response_model=JefaturaResumen)
-async def obtener_mi_jefatura(db: Session = Depends(get_db), current_user: Usuario = Depends(require_roles(["admin", "admin_empresa", "admin_cliente", "jefe_area", "jefe_grupo", "jefe_departamento", "jefe_direccion", "recursos_humanos", "oficina_central", "oficial_permanencia", "control_qr", "usuario", "visitante"]))):
+async def obtener_mi_jefatura(
+    db: Session = Depends(get_db),
+    current_user: Usuario = Depends(require_roles(TODOS_LOS_ROLES))
+):
     personal = db.query(Personal).filter(Personal.id == current_user.personal_id).first()
-    if not personal: raise HTTPException(status_code=404, detail="Personal no encontrado")
-    tiene_acceso_global = any(rol in personal.roles for rol in ROLES_ACCESO_GLOBAL)
-    roles_jefatura = [rol for rol in personal.roles if rol in ROLES_JEFATURA]
-    areas_por_tipo = procesar_areas_jefatura(personal.areas_que_jefatura, personal.areas_jefatura)
-    if 'jefe_area' in roles_jefatura and not areas_por_tipo.get('area') and personal.area: areas_por_tipo['area'] = [personal.area]
-    todas_las_areas = list(set([a for areas in areas_por_tipo.values() for a in areas]))
-    return JefaturaResumen(tiene_acceso_global=tiene_acceso_global, roles_jefatura=roles_jefatura, areas_por_tipo=areas_por_tipo, todas_las_areas=todas_las_areas)
+    if not personal: 
+        raise HTTPException(status_code=404, detail="Personal no encontrado")
+    
+    areas_jefatura = get_areas_jefatura(personal) if es_jefe(current_user) else []
+    roles_jefatura = ["jefe"] if es_jefe(current_user) else []
+    
+    return JefaturaResumen(
+        tiene_acceso_global=tiene_acceso_global(current_user),
+        roles_jefatura=roles_jefatura,
+        areas_por_tipo={"area": areas_jefatura},
+        todas_las_areas=areas_jefatura
+    )
+
+
+@router.get("/mis-subordinados", response_model=List[PersonalResponse])
+async def listar_mis_subordinados(
+    db: Session = Depends(get_db),
+    current_user: Usuario = Depends(require_roles(ROLES_ADMIN + ROLES_JEFE))
+):
+    """Endpoint específico para que un jefe vea sus subordinados directos"""
+    personal = db.query(Personal).filter(Personal.id == current_user.personal_id).first()
+    if not personal:
+        raise HTTPException(status_code=404, detail="Personal no encontrado")
+    
+    # Admin ve todo
+    if es_admin(current_user):
+        query = db.query(Personal).filter(Personal.activo == True)
+        if current_user.empresa_id:
+            query = query.filter(Personal.empresa_id == current_user.empresa_id)
+        return query.order_by(Personal.area, Personal.nombre).all()
+    
+    # Jefe ve sus subordinados
+    subordinados = get_subordinados(db, personal)
+    return subordinados
 
 
 @router.get("/jefes/por-area/{area}")
-async def listar_jefes_por_area(area: str, db: Session = Depends(get_db), current_user: Usuario = Depends(require_roles(["admin", "admin_empresa", "admin_cliente", "recursos_humanos"]))):
-    query = db.query(Personal).filter(Personal.activo == True, Personal.roles.op('&&')(ROLES_JEFATURA))
-    if current_user.empresa_id and current_user.rol_global != "super_admin": query = query.filter(Personal.empresa_id == current_user.empresa_id)
+async def listar_jefes_por_area(
+    area: str,
+    db: Session = Depends(get_db),
+    current_user: Usuario = Depends(require_roles(ROLES_ADMIN + ROLES_JEFE))
+):
+    query = db.query(Personal).filter(
+        Personal.activo == True,
+        Personal.roles.op('&&')(ROLES_JEFE)
+    )
+    if current_user.empresa_id:
+        query = query.filter(Personal.empresa_id == current_user.empresa_id)
+    
     jefes = query.all()
-    resultado = {'area': area, 'jefes': {r: [] for r in ROLES_JEFATURA}}
+    resultado = {'area': area, 'jefes': {'jefe': []}}
+    
     for jefe in jefes:
-        areas_procesadas = procesar_areas_jefatura(jefe.areas_que_jefatura, jefe.areas_jefatura)
-        for rol in ROLES_JEFATURA:
-            if rol in jefe.roles:
-                tipo = rol.replace('jefe_', '')
-                if area in areas_procesadas.get(tipo, []):
-                    resultado['jefes'][rol].append({'id': str(jefe.id), 'nombre': jefe.nombre, 'grado': jefe.grado, 'email': jefe.email, 'area_trabajo': jefe.area})
-                if rol == 'jefe_area' and not areas_procesadas.get('area') and jefe.area == area:
-                    resultado['jefes'][rol].append({'id': str(jefe.id), 'nombre': jefe.nombre, 'grado': jefe.grado, 'email': jefe.email, 'area_trabajo': jefe.area})
+        areas = get_areas_jefatura(jefe)
+        if area in areas:
+            resultado['jefes']['jefe'].append({
+                'id': str(jefe.id),
+                'nombre': jefe.nombre,
+                'grado': jefe.grado,
+                'email': jefe.email,
+                'area_trabajo': jefe.area
+            })
+    
     return resultado
 
 
 @router.get("/areas-sin-jefe")
-async def listar_areas_sin_jefe(db: Session = Depends(get_db), current_user: Usuario = Depends(require_roles(["admin", "admin_empresa", "admin_cliente", "recursos_humanos"]))):
-    query = db.query(Personal).filter(Personal.activo == True, Personal.roles.op('&&')(ROLES_JEFATURA))
-    if current_user.empresa_id and current_user.rol_global != "super_admin": query = query.filter(Personal.empresa_id == current_user.empresa_id)
+async def listar_areas_sin_jefe(
+    db: Session = Depends(get_db),
+    current_user: Usuario = Depends(require_roles(ROLES_ADMIN))
+):
+    query = db.query(Personal).filter(
+        Personal.activo == True,
+        Personal.roles.op('&&')(ROLES_JEFE)
+    )
+    if current_user.empresa_id:
+        query = query.filter(Personal.empresa_id == current_user.empresa_id)
+    
     jefes = query.all()
     areas_con_jefe = set()
     for jefe in jefes:
-        areas_procesadas = procesar_areas_jefatura(jefe.areas_que_jefatura, jefe.areas_jefatura)
-        for areas in areas_procesadas.values(): areas_con_jefe.update(areas)
-        if 'jefe_area' in jefe.roles and not any(areas_procesadas.values()) and jefe.area: areas_con_jefe.add(jefe.area)
+        areas = get_areas_jefatura(jefe)
+        areas_con_jefe.update(areas)
     
-    # Usar áreas del organigrama real
     areas_todas = db.query(Personal.area).filter(Personal.activo == True).distinct().all()
     areas_todas = [a[0] for a in areas_todas if a[0]]
     areas_sin_jefe = [a for a in areas_todas if a not in areas_con_jefe]
-    return {'total_areas': len(areas_todas), 'areas_con_jefe': len(areas_con_jefe), 'areas_sin_jefe': len(areas_sin_jefe), 'lista_areas_sin_jefe': areas_sin_jefe}
+    
+    return {
+        'total_areas': len(areas_todas),
+        'areas_con_jefe': len(areas_con_jefe),
+        'areas_sin_jefe': len(areas_sin_jefe),
+        'lista_areas_sin_jefe': areas_sin_jefe
+    }
 
 
 @router.get("/{id}", response_model=PersonalResponse)
-async def obtener_personal(id: UUID, db: Session = Depends(get_db), current_user: Usuario = Depends(require_roles(["admin", "admin_empresa", "admin_cliente", "jefe_area", "jefe_grupo", "jefe_departamento", "jefe_direccion", "usuario", "visitante"]))):
+async def obtener_personal(
+    id: UUID,
+    db: Session = Depends(get_db),
+    current_user: Usuario = Depends(require_roles(TODOS_LOS_ROLES))
+):
     personal = db.query(Personal).filter(Personal.id == id).first()
-    if not personal: raise HTTPException(status_code=404, detail="Personal no encontrado")
-    if current_user.empresa_id and current_user.rol_global != "super_admin":
-        if personal.empresa_id != current_user.empresa_id: raise HTTPException(status_code=403, detail="No tiene acceso a este personal")
+    if not personal:
+        raise HTTPException(status_code=404, detail="Personal no encontrado")
     
-    roles_usuario = get_roles_usuario(current_user)
-    es_visitante_user = es_visitante(roles_usuario)
-    es_usuario_basico = "usuario" in roles_usuario
-    tiene_rol_elevado = any(r in roles_usuario for r in ROLES_ACCESO_GLOBAL + ROLES_JEFATURA)
+    if current_user.empresa_id:
+        if personal.empresa_id != current_user.empresa_id:
+            raise HTTPException(status_code=403, detail="No tiene acceso a este personal")
     
-    if (es_usuario_basico or es_visitante_user) and not tiene_rol_elevado:
-        if str(current_user.personal_id) != str(id): raise HTTPException(status_code=403, detail="No tiene acceso a este personal")
-        return personal
+    # Verificar acceso
+    if not puede_acceder_a_personal(current_user, personal, db):
+        raise HTTPException(status_code=403, detail="No tiene acceso a este personal")
     
-    if any(r in roles_usuario for r in ROLES_JEFATURA) and not any(r in roles_usuario for r in ROLES_ADMIN):
-        jefe = db.query(Personal).filter(Personal.id == current_user.personal_id).first()
-        if jefe:
-            areas_jefatura = procesar_areas_jefatura(jefe.areas_que_jefatura, jefe.areas_jefatura)
-            todas_areas = []
-            for areas in areas_jefatura.values(): todas_areas.extend(areas)
-            if jefe.area and not todas_areas: todas_areas = [jefe.area]
-            if personal.area not in todas_areas: raise HTTPException(status_code=403, detail="No tiene acceso a este personal")
     return personal
 
 
 @router.get("/area/{area}", response_model=List[PersonalResponse])
-async def listar_por_area(area: str, activo: Optional[bool] = Query(True), db: Session = Depends(get_db), current_user: Usuario = Depends(require_roles(["admin", "admin_empresa", "admin_cliente", "jefe_area", "jefe_grupo", "jefe_departamento", "jefe_direccion"]))):
-    roles_usuario = get_roles_usuario(current_user)
-    if not any(r in roles_usuario for r in ROLES_ADMIN):
+async def listar_por_area(
+    area: str,
+    activo: Optional[bool] = Query(True),
+    db: Session = Depends(get_db),
+    current_user: Usuario = Depends(require_roles(ROLES_ADMIN + ROLES_JEFE))
+):
+    # Jefe solo puede ver sus áreas
+    if es_jefe(current_user) and not es_admin(current_user):
         jefe = db.query(Personal).filter(Personal.id == current_user.personal_id).first()
         if jefe:
-            areas_jefatura = procesar_areas_jefatura(jefe.areas_que_jefatura, jefe.areas_jefatura)
-            todas_areas = []
-            for areas in areas_jefatura.values(): todas_areas.extend(areas)
-            if jefe.area and not todas_areas: todas_areas = [jefe.area]
-            if area not in todas_areas: raise HTTPException(status_code=403, detail="No tiene acceso a esta área")
+            areas = get_areas_jefatura(jefe)
+            if area not in areas:
+                raise HTTPException(status_code=403, detail="No tiene acceso a esta área")
+    
     query = db.query(Personal).filter(Personal.area == area)
-    if current_user.empresa_id and current_user.rol_global != "super_admin": query = query.filter(Personal.empresa_id == current_user.empresa_id)
-    if activo is not None: query = query.filter(Personal.activo == activo)
+    if current_user.empresa_id:
+        query = query.filter(Personal.empresa_id == current_user.empresa_id)
+    if activo is not None:
+        query = query.filter(Personal.activo == activo)
     return query.order_by(Personal.grado, Personal.nombre).all()
 
 
 @router.get("/verificar-dni/{dni}")
-async def verificar_dni(dni: str, db: Session = Depends(get_db), current_user: Usuario = Depends(require_roles(["admin", "admin_empresa", "admin_cliente"]))):
+async def verificar_dni(
+    dni: str,
+    db: Session = Depends(get_db),
+    current_user: Usuario = Depends(require_roles(ROLES_ADMIN))
+):
     query = db.query(Personal).filter(Personal.dni == dni)
-    if current_user.empresa_id and current_user.rol_global != "super_admin": query = query.filter(Personal.empresa_id == current_user.empresa_id)
+    if current_user.empresa_id:
+        query = query.filter(Personal.empresa_id == current_user.empresa_id)
     usuario = query.first()
-    if not usuario: return {"disponible": True, "existe": False, "activo": False}
-    return {"disponible": not usuario.activo, "existe": True, "activo": usuario.activo, "id": str(usuario.id), "nombre": usuario.nombre, "email": usuario.email}
+    if not usuario:
+        return {"disponible": True, "existe": False, "activo": False}
+    return {
+        "disponible": not usuario.activo,
+        "existe": True,
+        "activo": usuario.activo,
+        "id": str(usuario.id),
+        "nombre": usuario.nombre,
+        "email": usuario.email
+    }
 
 
 @router.post("/", response_model=PersonalResponse, status_code=201)
-async def crear_personal(personal_data: PersonalCreate, db: Session = Depends(get_db), current_user: Usuario = Depends(require_roles(["admin", "admin_empresa", "admin_cliente"]))):
-    """Crea un nuevo personal. Si es visitante, genera QR estático automáticamente."""
+async def crear_personal(
+    personal_data: PersonalCreate,
+    db: Session = Depends(get_db),
+    current_user: Usuario = Depends(require_roles(ROLES_PUEDEN_GESTIONAR_USUARIOS))
+):
+    """Crea un nuevo personal. Solo admin_empresa puede crear usuarios."""
     
-    # CORREGIDO: Limpiar todos los campos opcionales antes de procesar
+    # Limpiar campos opcionales
     personal_data.cip = limpiar_valor_optional(personal_data.cip)
     personal_data.email = limpiar_valor_optional(personal_data.email)
     personal_data.telefono = limpiar_valor_optional(personal_data.telefono)
@@ -367,27 +540,22 @@ async def crear_personal(personal_data: PersonalCreate, db: Session = Depends(ge
     if es_visitante_personal and not personal_data.area:
         personal_data.area = None
     
-    areas_procesadas = procesar_areas_jefatura(personal_data.areas_que_jefatura, personal_data.areas_jefatura)
-    for rol in ROLES_JEFATURA:
-        if rol in personal_data.roles:
-            tipo = rol.replace('jefe_', '')
-            areas = areas_procesadas.get(tipo, [])
-            if rol == 'jefe_area' and not areas and personal_data.area: areas = [personal_data.area]
-            if not areas:
-                nombres = {'jefe_grupo': 'Jefe de Grupo', 'jefe_area': 'Jefe de Área', 'jefe_departamento': 'Jefe de Departamento', 'jefe_direccion': 'Jefe de Dirección'}
-                raise HTTPException(status_code=400, detail=f"Los {nombres[rol]} deben tener al menos un área asignada")
+    # Validar que jefes tengan áreas asignadas
+    if 'jefe' in (personal_data.roles or []):
+        areas = get_areas_jefatura_from_data(personal_data)
+        if not areas:
+            raise HTTPException(status_code=400, detail="Los jefes deben tener al menos un área asignada para jefaturar")
     
     # Verificar DNI duplicado
     query = db.query(Personal).filter(Personal.dni == personal_data.dni)
-    if current_user.empresa_id: 
+    if current_user.empresa_id:
         query = query.filter(Personal.empresa_id == current_user.empresa_id)
     usuario_existente = query.first()
     if usuario_existente:
-        if usuario_existente.activo: 
+        if usuario_existente.activo:
             raise HTTPException(status_code=400, detail="DNI ya registrado y activo")
         else:
-            # Reactivar usuario inactivo
-            for key, value in personal_data.model_dump().items(): 
+            for key, value in personal_data.model_dump().items():
                 setattr(usuario_existente, key, value)
             usuario_existente.activo = True
             db.commit()
@@ -395,34 +563,35 @@ async def crear_personal(personal_data: PersonalCreate, db: Session = Depends(ge
             clear_personal_cache()
             return usuario_existente
     
-    # CORREGIDO: Validación CIP - solo validar duplicados si el CIP tiene un valor real
+    # Validar CIP duplicado
     if personal_data.cip and personal_data.cip.strip():
         query_cip = db.query(Personal).filter(
-            Personal.cip == personal_data.cip, 
+            Personal.cip == personal_data.cip,
             Personal.activo == True
         )
-        if current_user.empresa_id: 
+        if current_user.empresa_id:
             query_cip = query_cip.filter(Personal.empresa_id == current_user.empresa_id)
-        if query_cip.first(): 
+        if query_cip.first():
             raise HTTPException(status_code=400, detail="CIP ya registrado")
     
-    # CORREGIDO: Validación email - solo validar duplicados si el email tiene un valor real
+    # Validar email duplicado
     if personal_data.email and personal_data.email.strip():
         email_existente = db.query(Personal).filter(
-            Personal.email == personal_data.email, 
+            Personal.email == personal_data.email,
             Personal.activo == True
         ).first()
-        if email_existente: 
+        if email_existente:
             raise HTTPException(status_code=400, detail="Email ya registrado")
     
     personal = Personal(**personal_data.model_dump())
-    if current_user.empresa_id: 
+    if current_user.empresa_id:
         personal.empresa_id = current_user.empresa_id
     
     db.add(personal)
     db.commit()
     db.refresh(personal)
     
+    # Generar QR para visitantes
     if 'visitante' in (personal.roles or []):
         generar_qr_estatico_para_visitante(db, personal)
         db.commit()
@@ -432,15 +601,20 @@ async def crear_personal(personal_data: PersonalCreate, db: Session = Depends(ge
 
 
 @router.put("/{id}", response_model=PersonalResponse)
-async def actualizar_personal(id: UUID, personal_data: PersonalUpdate, db: Session = Depends(get_db), current_user: Usuario = Depends(require_roles(["admin", "admin_empresa", "admin_cliente"]))):
+async def actualizar_personal(
+    id: UUID,
+    personal_data: PersonalUpdate,
+    db: Session = Depends(get_db),
+    current_user: Usuario = Depends(require_roles(ROLES_PUEDEN_GESTIONAR_USUARIOS))
+):
     personal = db.query(Personal).filter(Personal.id == id).first()
-    if not personal: 
+    if not personal:
         raise HTTPException(status_code=404, detail="Personal no encontrado")
-    if current_user.empresa_id and current_user.rol_global != "super_admin":
-        if personal.empresa_id != current_user.empresa_id: 
+    if current_user.empresa_id:
+        if personal.empresa_id != current_user.empresa_id:
             raise HTTPException(status_code=403, detail="No tiene acceso a este personal")
     
-    # CORREGIDO: Limpiar campos opcionales antes de validar
+    # Limpiar campos opcionales
     if personal_data.cip is not None:
         personal_data.cip = limpiar_valor_optional(personal_data.cip)
     if personal_data.email is not None:
@@ -455,60 +629,56 @@ async def actualizar_personal(id: UUID, personal_data: PersonalUpdate, db: Sessi
     roles_actuales = personal_data.roles if personal_data.roles is not None else personal.roles
     es_visitante_actual = 'visitante' in (roles_actuales or [])
     
-    areas_que = personal_data.areas_que_jefatura if personal_data.areas_que_jefatura is not None else personal.areas_que_jefatura
-    areas_obj = personal_data.areas_jefatura if personal_data.areas_jefatura is not None else personal.areas_jefatura
-    area_trabajo = personal_data.area if personal_data.area is not None else personal.area
-    areas_procesadas = procesar_areas_jefatura(areas_que, areas_obj)
-    
-    if not es_visitante_actual:
-        for rol in ROLES_JEFATURA:
-            if rol in roles_actuales:
-                tipo = rol.replace('jefe_', '')
-                areas = areas_procesadas.get(tipo, [])
-                if rol == 'jefe_area' and not areas and area_trabajo: 
-                    areas = [area_trabajo]
-                if not areas:
-                    nombres = {
-                        'jefe_grupo': 'Jefe de Grupo', 
-                        'jefe_area': 'Jefe de Área', 
-                        'jefe_departamento': 'Jefe de Departamento', 
-                        'jefe_direccion': 'Jefe de Dirección'
-                    }
-                    raise HTTPException(status_code=400, detail=f"Los {nombres[rol]} deben tener al menos un área asignada")
+    # Validar que jefes tengan áreas asignadas
+    if 'jefe' in (roles_actuales or []) and not es_visitante_actual:
+        area_trabajo = personal_data.area if personal_data.area is not None else personal.area
+        areas_que = personal_data.areas_que_jefatura if personal_data.areas_que_jefatura is not None else personal.areas_que_jefatura
+        areas_obj = personal_data.areas_jefatura if personal_data.areas_jefatura is not None else personal.areas_jefatura
+        
+        class TempData:
+            pass
+        temp = TempData()
+        temp.areas_que_jefatura = areas_que
+        temp.areas_jefatura = areas_obj
+        temp.area = area_trabajo
+        
+        areas = get_areas_jefatura_from_data(temp)
+        if not areas:
+            raise HTTPException(status_code=400, detail="Los jefes deben tener al menos un área asignada para jefaturar")
     
     # Validar DNI duplicado
     if personal_data.dni and personal_data.dni != personal.dni:
         query = db.query(Personal).filter(Personal.dni == personal_data.dni, Personal.activo == True)
-        if current_user.empresa_id: 
+        if current_user.empresa_id:
             query = query.filter(Personal.empresa_id == current_user.empresa_id)
-        if query.first(): 
+        if query.first():
             raise HTTPException(status_code=400, detail="DNI ya registrado")
     
-    # CORREGIDO: Validación CIP - solo validar duplicados si el CIP tiene un valor real
+    # Validar CIP duplicado
     if personal_data.cip is not None and personal_data.cip != personal.cip:
         if personal_data.cip and personal_data.cip.strip():
             query = db.query(Personal).filter(
-                Personal.cip == personal_data.cip, 
+                Personal.cip == personal_data.cip,
                 Personal.activo == True
             )
-            if current_user.empresa_id: 
+            if current_user.empresa_id:
                 query = query.filter(Personal.empresa_id == current_user.empresa_id)
-            if query.first(): 
+            if query.first():
                 raise HTTPException(status_code=400, detail="CIP ya registrado")
     
-    # CORREGIDO: Validación email - solo validar duplicados si el email tiene un valor real
+    # Validar email duplicado
     if personal_data.email is not None and personal_data.email != personal.email:
         if personal_data.email and personal_data.email.strip():
             if db.query(Personal).filter(
-                Personal.email == personal_data.email, 
+                Personal.email == personal_data.email,
                 Personal.activo == True
-            ).first(): 
+            ).first():
                 raise HTTPException(status_code=400, detail="Email ya registrado")
     
     era_visitante = 'visitante' in (personal.roles or [])
     update_data = personal_data.model_dump(exclude_unset=True)
     
-    for field, value in update_data.items(): 
+    for field, value in update_data.items():
         setattr(personal, field, value)
     
     db.commit()
@@ -517,7 +687,7 @@ async def actualizar_personal(id: UUID, personal_data: PersonalUpdate, db: Sessi
     es_visitante_ahora = 'visitante' in (personal.roles or [])
     if es_visitante_ahora and not era_visitante:
         qr_existente = db.query(QRRegistro).filter(
-            QRRegistro.empleado_id == personal.id, 
+            QRRegistro.empleado_id == personal.id,
             QRRegistro.tipo == "visitante"
         ).first()
         if not qr_existente:
@@ -533,8 +703,13 @@ async def actualizar_personal(id: UUID, personal_data: PersonalUpdate, db: Sessi
 # =====================================================
 
 @router.post("/carga-masiva-stream")
-async def carga_masiva_stream(datos: List[Dict[str, Any]], db: Session = Depends(get_db), current_user: Usuario = Depends(require_roles(["admin", "admin_empresa", "admin_cliente"]))):
+async def carga_masiva_stream(
+    datos: List[Dict[str, Any]],
+    db: Session = Depends(get_db),
+    current_user: Usuario = Depends(require_roles(ROLES_PUEDEN_GESTIONAR_USUARIOS))
+):
     dominio = obtener_dominio_empresa(db, current_user.empresa_id)
+    
     async def generar_eventos():
         total = len(datos)
         exitosos = 0
@@ -542,46 +717,47 @@ async def carga_masiva_stream(datos: List[Dict[str, Any]], db: Session = Depends
         detalles = []
         errores = []
         yield f"data: {json.dumps({'type': 'start', 'total': total})}\n\n"
+        
         for idx, item in enumerate(datos):
             fila = item.get('_fila', idx + 2)
             try:
                 dni = str(item.get('DNI', '') or item.get('dni', '')).strip() or f"PEND{idx+1:04d}"
-                cip = str(item.get('CIP', '') or item.get('cip', '')).strip() or f"CIP{idx+1:04d}"
-                # CORREGIDO: Limpiar CIP en carga masiva
-                cip = limpiar_valor_optional(cip)
-                
+                cip = limpiar_valor_optional(str(item.get('CIP', '') or item.get('cip', '')).strip())
                 grado = str(item.get('GRADO', '') or item.get('grado', '')).strip().upper() or "PENDIENTE"
                 nombre = str(item.get('NOMBRE COMPLETO', '') or item.get('nombre', '')).strip().upper() or f"PERSONAL {idx+1}"
-                email = str(item.get('EMAIL', '') or item.get('email', '')).strip().lower()
-                if not email or '@' not in email: 
+                email = limpiar_valor_optional(str(item.get('EMAIL', '') or item.get('email', '')).strip().lower())
+                if not email or '@' not in email:
                     email = generar_email_interno(nombre, dni, dominio)
-                email = limpiar_valor_optional(email)
                 
                 area = str(item.get('ÁREA', '') or item.get('area', '')).strip().upper() or "PENDIENTE"
                 roles_str = str(item.get('ROLES', '') or item.get('roles', '')).strip()
                 roles = [r.strip().lower() for r in roles_str.split(',') if r.strip()] if roles_str else ['usuario']
                 
-                telefono = str(item.get('TELÉFONO', '') or item.get('telefono', '')).strip()
-                if telefono and not telefono.isdigit(): 
+                # Validar que los roles existan
+                for rol in roles:
+                    if rol not in TODOS_LOS_ROLES:
+                        raise ValueError(f"Rol inválido: {rol}")
+                
+                telefono = limpiar_valor_optional(str(item.get('TELÉFONO', '') or item.get('telefono', '')).strip())
+                if telefono and not telefono.isdigit():
                     telefono = ''.join(c for c in telefono if c.isdigit())
-                telefono = limpiar_valor_optional(telefono)
                 
                 especialidad = limpiar_valor_optional(str(item.get('ESPECIALIDAD', '') or item.get('especialidad', '')).strip())
                 
                 fecha_nac = item.get('FECHA NACIMIENTO (YYYY-MM-DD)') or item.get('fecha_nacimiento')
                 if fecha_nac and isinstance(fecha_nac, str):
-                    try: 
+                    try:
                         fecha_nac = datetime.strptime(fecha_nac, '%Y-%m-%d').date()
-                    except: 
+                    except:
                         fecha_nac = None
                 
                 fecha_ingreso = item.get('FECHA INGRESO (YYYY-MM-DD)') or item.get('fecha_ingreso')
                 if fecha_ingreso and isinstance(fecha_ingreso, str):
-                    try: 
+                    try:
                         fecha_ingreso = datetime.strptime(fecha_ingreso, '%Y-%m-%d').date()
-                    except: 
+                    except:
                         fecha_ingreso = datetime.now().date()
-                else: 
+                else:
                     fecha_ingreso = datetime.now().date()
                 
                 num_colegiatura = limpiar_valor_optional(str(item.get('NÚMERO COLEGIATURA', '') or item.get('numero_colegiatura', '')).strip())
@@ -590,14 +766,13 @@ async def carga_masiva_stream(datos: List[Dict[str, Any]], db: Session = Depends
                 areas_jefatura_str = str(item.get('ÁREAS_JEFATURA', '') or item.get('area_jefatura', '')).strip()
                 areas_jefatura = [a.strip().upper() for a in areas_jefatura_str.split(',') if a.strip()] if areas_jefatura_str else []
                 
-                if "jefe_area" in roles and not areas_jefatura: 
-                    raise ValueError("Los jefes de área deben tener al menos un área asignada")
+                if "jefe" in roles and not areas_jefatura:
+                    raise ValueError("Los jefes deben tener al menos un área asignada")
                 
                 query = db.query(Personal)
-                if current_user.empresa_id: 
+                if current_user.empresa_id:
                     query = query.filter(Personal.empresa_id == current_user.empresa_id)
                 
-                # CORREGIDO: Solo buscar por CIP si tiene valor
                 if cip:
                     usuario_existente = query.filter(or_(Personal.dni == dni, Personal.cip == cip)).first()
                 else:
@@ -609,14 +784,14 @@ async def carga_masiva_stream(datos: List[Dict[str, Any]], db: Session = Depends
                         errores.append({"fila": fila, "errores": [f"Usuario ya existe (DNI: {dni})"]})
                     else:
                         for key, value in {
-                            'grado': grado, 'nombre': nombre, 'email': email, 
-                            'telefono': telefono, 'fecha_nacimiento': fecha_nac, 
-                            'area': area, 'especialidad': especialidad, 
-                            'fecha_ingreso': fecha_ingreso, 'roles': roles, 
-                            'numero_colegiatura': num_colegiatura, 
-                            'observaciones': observaciones, 
+                            'grado': grado, 'nombre': nombre, 'email': email,
+                            'telefono': telefono, 'fecha_nacimiento': fecha_nac,
+                            'area': area, 'especialidad': especialidad,
+                            'fecha_ingreso': fecha_ingreso, 'roles': roles,
+                            'numero_colegiatura': num_colegiatura,
+                            'observaciones': observaciones,
                             'areas_que_jefatura': areas_jefatura
-                        }.items(): 
+                        }.items():
                             setattr(usuario_existente, key, value)
                         usuario_existente.activo = True
                         db.commit()
@@ -624,51 +799,55 @@ async def carga_masiva_stream(datos: List[Dict[str, Any]], db: Session = Depends
                         detalles.append({"fila": fila, "mensaje": f"Usuario reactivado: {nombre}"})
                 else:
                     nuevo_personal = Personal(
-                        dni=dni, cip=cip, grado=grado, nombre=nombre, 
-                        email=email, telefono=telefono, 
-                        fecha_nacimiento=fecha_nac, area=area, 
-                        especialidad=especialidad, fecha_ingreso=fecha_ingreso, 
-                        roles=roles, numero_colegiatura=num_colegiatura, 
-                        observaciones=observaciones, 
-                        areas_que_jefatura=areas_jefatura, 
-                        activo=True, condicion='Titular', 
+                        dni=dni, cip=cip, grado=grado, nombre=nombre,
+                        email=email, telefono=telefono,
+                        fecha_nacimiento=fecha_nac, area=area,
+                        especialidad=especialidad, fecha_ingreso=fecha_ingreso,
+                        roles=roles, numero_colegiatura=num_colegiatura,
+                        observaciones=observaciones,
+                        areas_que_jefatura=areas_jefatura,
+                        activo=True, condicion='Titular',
                         empresa_id=current_user.empresa_id
                     )
                     db.add(nuevo_personal)
                     db.commit()
                     db.refresh(nuevo_personal)
                     
-                    if 'visitante' in roles: 
+                    if 'visitante' in roles:
                         generar_qr_estatico_para_visitante(db, nuevo_personal)
                         db.commit()
                     
                     exitosos += 1
                     detalles.append({"fila": fila, "mensaje": f"Usuario creado: {nombre}"})
                 
-                if (idx + 1) % 5 == 0 or idx + 1 == total: 
+                if (idx + 1) % 5 == 0 or idx + 1 == total:
                     yield f"data: {json.dumps({'type': 'progress', 'actual': idx + 1, 'total': total, 'exitosos': exitosos, 'fallidos': fallidos})}\n\n"
-            except Exception as e: 
+            except Exception as e:
                 db.rollback()
                 fallidos += 1
                 errores.append({"fila": fila, "errores": [str(e)]})
         
-        if exitosos > 0: 
+        if exitosos > 0:
             clear_personal_cache()
         yield f"data: {json.dumps({'type': 'complete', 'exitosos': exitosos, 'fallidos': fallidos, 'detalles': detalles, 'errores': errores})}\n\n"
     
     return StreamingResponse(
-        generar_eventos(), 
-        media_type="text/event-stream", 
+        generar_eventos(),
+        media_type="text/event-stream",
         headers={
-            "Cache-Control": "no-cache", 
-            "Connection": "keep-alive", 
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
             "X-Accel-Buffering": "no"
         }
     )
 
 
 @router.post("/carga-masiva")
-async def carga_masiva_personal(datos: List[Dict[str, Any]], db: Session = Depends(get_db), current_user: Usuario = Depends(require_roles(["admin", "admin_empresa", "admin_cliente"]))):
+async def carga_masiva_personal(
+    datos: List[Dict[str, Any]],
+    db: Session = Depends(get_db),
+    current_user: Usuario = Depends(require_roles(ROLES_PUEDEN_GESTIONAR_USUARIOS))
+):
     dominio = obtener_dominio_empresa(db, current_user.empresa_id)
     resultados = {"exitosos": 0, "fallidos": 0, "detalles": [], "errores": []}
     
@@ -680,33 +859,37 @@ async def carga_masiva_personal(datos: List[Dict[str, Any]], db: Session = Depen
             grado = str(item.get('GRADO', '') or item.get('grado', '')).strip().upper() or "PENDIENTE"
             nombre = str(item.get('NOMBRE COMPLETO', '') or item.get('nombre', '')).strip().upper() or f"PERSONAL {idx+1}"
             email = limpiar_valor_optional(str(item.get('EMAIL', '') or item.get('email', '')).strip().lower())
-            if not email or '@' not in email: 
+            if not email or '@' not in email:
                 email = generar_email_interno(nombre, dni, dominio)
             
             area = str(item.get('ÁREA', '') or item.get('area', '')).strip().upper() or "PENDIENTE"
             roles_str = str(item.get('ROLES', '') or item.get('roles', '')).strip()
             roles = [r.strip().lower() for r in roles_str.split(',') if r.strip()] if roles_str else ['usuario']
             
+            for rol in roles:
+                if rol not in TODOS_LOS_ROLES:
+                    raise ValueError(f"Rol inválido: {rol}")
+            
             telefono = limpiar_valor_optional(str(item.get('TELÉFONO', '') or item.get('telefono', '')).strip())
-            if telefono and not telefono.isdigit(): 
+            if telefono and not telefono.isdigit():
                 telefono = ''.join(c for c in telefono if c.isdigit())
             
             especialidad = limpiar_valor_optional(str(item.get('ESPECIALIDAD', '') or item.get('especialidad', '')).strip())
             
             fecha_nac = item.get('FECHA NACIMIENTO (YYYY-MM-DD)') or item.get('fecha_nacimiento')
             if fecha_nac and isinstance(fecha_nac, str):
-                try: 
+                try:
                     fecha_nac = datetime.strptime(fecha_nac, '%Y-%m-%d').date()
-                except: 
+                except:
                     fecha_nac = None
             
             fecha_ingreso = item.get('FECHA INGRESO (YYYY-MM-DD)') or item.get('fecha_ingreso')
             if fecha_ingreso and isinstance(fecha_ingreso, str):
-                try: 
+                try:
                     fecha_ingreso = datetime.strptime(fecha_ingreso, '%Y-%m-%d').date()
-                except: 
+                except:
                     fecha_ingreso = datetime.now().date()
-            else: 
+            else:
                 fecha_ingreso = datetime.now().date()
             
             num_colegiatura = limpiar_valor_optional(str(item.get('NÚMERO COLEGIATURA', '') or item.get('numero_colegiatura', '')).strip())
@@ -715,34 +898,33 @@ async def carga_masiva_personal(datos: List[Dict[str, Any]], db: Session = Depen
             areas_jefatura_str = str(item.get('ÁREAS_JEFATURA', '') or item.get('area_jefatura', '')).strip()
             areas_jefatura = [a.strip().upper() for a in areas_jefatura_str.split(',') if a.strip()] if areas_jefatura_str else []
             
-            if "jefe_area" in roles and not areas_jefatura: 
-                raise ValueError("Los jefes de área deben tener al menos un área asignada")
+            if "jefe" in roles and not areas_jefatura:
+                raise ValueError("Los jefes deben tener al menos un área asignada")
             
             query = db.query(Personal)
-            if current_user.empresa_id: 
+            if current_user.empresa_id:
                 query = query.filter(Personal.empresa_id == current_user.empresa_id)
             
-            # CORREGIDO: Solo buscar por CIP si tiene valor
             if cip:
                 usuario_existente = query.filter(or_(Personal.dni == dni, Personal.cip == cip)).first()
             else:
                 usuario_existente = query.filter(Personal.dni == dni).first()
             
             if usuario_existente:
-                if usuario_existente.activo: 
+                if usuario_existente.activo:
                     resultados["fallidos"] += 1
                     resultados["errores"].append({"fila": fila, "errores": [f"Usuario ya existe (DNI: {dni})"]})
                     continue
                 else:
                     for key, value in {
-                        'grado': grado, 'nombre': nombre, 'email': email, 
-                        'telefono': telefono, 'fecha_nacimiento': fecha_nac, 
-                        'area': area, 'especialidad': especialidad, 
-                        'fecha_ingreso': fecha_ingreso, 'roles': roles, 
-                        'numero_colegiatura': num_colegiatura, 
-                        'observaciones': observaciones, 
+                        'grado': grado, 'nombre': nombre, 'email': email,
+                        'telefono': telefono, 'fecha_nacimiento': fecha_nac,
+                        'area': area, 'especialidad': especialidad,
+                        'fecha_ingreso': fecha_ingreso, 'roles': roles,
+                        'numero_colegiatura': num_colegiatura,
+                        'observaciones': observaciones,
                         'areas_que_jefatura': areas_jefatura
-                    }.items(): 
+                    }.items():
                         setattr(usuario_existente, key, value)
                     usuario_existente.activo = True
                     db.commit()
@@ -751,32 +933,32 @@ async def carga_masiva_personal(datos: List[Dict[str, Any]], db: Session = Depen
                     continue
             
             nuevo_personal = Personal(
-                dni=dni, cip=cip, grado=grado, nombre=nombre, 
-                email=email, telefono=telefono, 
-                fecha_nacimiento=fecha_nac, area=area, 
-                especialidad=especialidad, fecha_ingreso=fecha_ingreso, 
-                roles=roles, numero_colegiatura=num_colegiatura, 
-                observaciones=observaciones, 
-                areas_que_jefatura=areas_jefatura, 
-                activo=True, condicion='Titular', 
+                dni=dni, cip=cip, grado=grado, nombre=nombre,
+                email=email, telefono=telefono,
+                fecha_nacimiento=fecha_nac, area=area,
+                especialidad=especialidad, fecha_ingreso=fecha_ingreso,
+                roles=roles, numero_colegiatura=num_colegiatura,
+                observaciones=observaciones,
+                areas_que_jefatura=areas_jefatura,
+                activo=True, condicion='Titular',
                 empresa_id=current_user.empresa_id
             )
             db.add(nuevo_personal)
             db.commit()
             db.refresh(nuevo_personal)
             
-            if 'visitante' in roles: 
+            if 'visitante' in roles:
                 generar_qr_estatico_para_visitante(db, nuevo_personal)
                 db.commit()
             
             resultados["exitosos"] += 1
             resultados["detalles"].append({"fila": fila, "mensaje": f"Usuario creado: {nombre}"})
-        except Exception as e: 
+        except Exception as e:
             db.rollback()
             resultados["fallidos"] += 1
             resultados["errores"].append({"fila": fila, "errores": [str(e)]})
     
-    if resultados["exitosos"] > 0: 
+    if resultados["exitosos"] > 0:
         clear_personal_cache()
     return resultados
 
@@ -786,18 +968,24 @@ async def carga_masiva_personal(datos: List[Dict[str, Any]], db: Session = Depen
 # =====================================================
 
 @router.get("/{id}/tiene-relaciones")
-async def verificar_relaciones(id: UUID, db: Session = Depends(get_db), current_user: Usuario = Depends(require_roles(["admin", "admin_empresa", "admin_cliente"]))):
+async def verificar_relaciones(
+    id: UUID,
+    db: Session = Depends(get_db),
+    current_user: Usuario = Depends(require_roles(ROLES_ADMIN))
+):
     personal = db.query(Personal).filter(Personal.id == id).first()
-    if not personal: 
+    if not personal:
         raise HTTPException(status_code=404, detail="Personal no encontrado")
-    if current_user.empresa_id and current_user.rol_global != "super_admin":
-        if personal.empresa_id != current_user.empresa_id: 
+    if current_user.empresa_id:
+        if personal.empresa_id != current_user.empresa_id:
             raise HTTPException(status_code=403, detail="No tiene acceso a este personal")
     
     tiene_planificacion = db.query(Planificacion.id).filter(Planificacion.personal_id == id).first() is not None
     tiene_asistencia = db.query(Asistencia.id).filter(Asistencia.personal_id == id).first() is not None
     tiene_dm = db.query(DescansoMedico.id).filter(DescansoMedico.paciente_id == id).first() is not None
-    tiene_solicitudes = db.query(SolicitudCambio.id).filter(or_(SolicitudCambio.empleado_id == id, SolicitudCambio.empleado2_id == id)).first() is not None
+    tiene_solicitudes = db.query(SolicitudCambio.id).filter(
+        or_(SolicitudCambio.empleado_id == id, SolicitudCambio.empleado2_id == id)
+    ).first() is not None
     tiene_usuario_auth = db.query(Usuario.id).filter(Usuario.personal_id == id).first() is not None
     
     return {
@@ -813,18 +1001,24 @@ async def verificar_relaciones(id: UUID, db: Session = Depends(get_db), current_
 
 
 @router.delete("/{id}/fisico")
-async def eliminar_personal_fisico(id: UUID, db: Session = Depends(get_db), current_user: Usuario = Depends(require_roles(["admin"]))):
+async def eliminar_personal_fisico(
+    id: UUID,
+    db: Session = Depends(get_db),
+    current_user: Usuario = Depends(require_roles(ROLES_ADMIN))
+):
     personal = db.query(Personal).filter(Personal.id == id).first()
-    if not personal: 
+    if not personal:
         raise HTTPException(status_code=404, detail="Personal no encontrado")
-    if current_user.empresa_id and current_user.rol_global != "super_admin":
-        if personal.empresa_id != current_user.empresa_id: 
+    if current_user.empresa_id:
+        if personal.empresa_id != current_user.empresa_id:
             raise HTTPException(status_code=403, detail="No tiene acceso a este personal")
     
     if db.query(Planificacion.id).filter(Planificacion.personal_id == id).first() or \
        db.query(Asistencia.id).filter(Asistencia.personal_id == id).first() or \
        db.query(DescansoMedico.id).filter(DescansoMedico.paciente_id == id).first() or \
-       db.query(SolicitudCambio.id).filter(or_(SolicitudCambio.empleado_id == id, SolicitudCambio.empleado2_id == id)).first() or \
+       db.query(SolicitudCambio.id).filter(
+           or_(SolicitudCambio.empleado_id == id, SolicitudCambio.empleado2_id == id)
+       ).first() or \
        db.query(Usuario.id).filter(Usuario.personal_id == id).first():
         raise HTTPException(status_code=400, detail="No se puede eliminar físicamente. Use desactivación.")
     
@@ -836,12 +1030,16 @@ async def eliminar_personal_fisico(id: UUID, db: Session = Depends(get_db), curr
 
 
 @router.delete("/{id}")
-async def desactivar_personal(id: UUID, db: Session = Depends(get_db), current_user: Usuario = Depends(require_roles(["admin", "admin_empresa", "admin_cliente"]))):
+async def desactivar_personal(
+    id: UUID,
+    db: Session = Depends(get_db),
+    current_user: Usuario = Depends(require_roles(ROLES_PUEDEN_GESTIONAR_USUARIOS))
+):
     personal = db.query(Personal).filter(Personal.id == id).first()
-    if not personal: 
+    if not personal:
         raise HTTPException(status_code=404, detail="Personal no encontrado")
-    if current_user.empresa_id and current_user.rol_global != "super_admin":
-        if personal.empresa_id != current_user.empresa_id: 
+    if current_user.empresa_id:
+        if personal.empresa_id != current_user.empresa_id:
             raise HTTPException(status_code=403, detail="No tiene acceso a este personal")
     
     personal.activo = False
@@ -851,14 +1049,18 @@ async def desactivar_personal(id: UUID, db: Session = Depends(get_db), current_u
 
 
 @router.post("/{id}/restaurar", response_model=PersonalResponse)
-async def restaurar_personal(id: UUID, db: Session = Depends(get_db), current_user: Usuario = Depends(require_roles(["admin", "admin_empresa", "admin_cliente"]))):
+async def restaurar_personal(
+    id: UUID,
+    db: Session = Depends(get_db),
+    current_user: Usuario = Depends(require_roles(ROLES_PUEDEN_GESTIONAR_USUARIOS))
+):
     personal = db.query(Personal).filter(Personal.id == id).first()
-    if not personal: 
+    if not personal:
         raise HTTPException(status_code=404, detail="Personal no encontrado")
-    if current_user.empresa_id and current_user.rol_global != "super_admin":
-        if personal.empresa_id != current_user.empresa_id: 
+    if current_user.empresa_id:
+        if personal.empresa_id != current_user.empresa_id:
             raise HTTPException(status_code=403, detail="No tiene acceso a este personal")
-    if personal.activo: 
+    if personal.activo:
         raise HTTPException(status_code=400, detail="El usuario ya está activo")
     
     personal.activo = True
@@ -869,8 +1071,13 @@ async def restaurar_personal(id: UUID, db: Session = Depends(get_db), current_us
 
 
 @router.get("/inactivos/lista", response_model=List[PersonalResponse])
-async def listar_inactivos(limit: int = Query(100), offset: int = Query(0), db: Session = Depends(get_db), current_user: Usuario = Depends(require_roles(["admin", "admin_empresa", "admin_cliente"]))):
+async def listar_inactivos(
+    limit: int = Query(100),
+    offset: int = Query(0),
+    db: Session = Depends(get_db),
+    current_user: Usuario = Depends(require_roles(ROLES_ADMIN))
+):
     query = db.query(Personal).filter(Personal.activo == False)
-    if current_user.empresa_id and current_user.rol_global != "super_admin": 
+    if current_user.empresa_id:
         query = query.filter(Personal.empresa_id == current_user.empresa_id)
     return query.order_by(Personal.nombre).offset(offset).limit(limit).all()

@@ -1,7 +1,11 @@
+# app/core/security.py
+# VERSIÓN COMPLETA ACTUALIZADA - JERARQUÍA DE ROLES CORRECTA
+# super_admin → admin_cliente → admin_empresa → jefe → usuario → visitante → escaner
+
 """
 CORE DE SEGURIDAD - ARGON2 EXCLUSIVO
 Sistema multi-empresa con JWT enriquecido
-Soporte para jerarquía: super_admin → admin_cliente → admin_empresa → usuario
+Soporte para jerarquía: super_admin → admin_cliente → admin_empresa → jefe → usuario → visitante → escaner
 """
 
 from datetime import datetime, timedelta
@@ -15,21 +19,21 @@ from app.config import settings
 # =====================================================
 ROLES_SISTEMA = [
     'super_admin',       # Nivel 0: Dueño del sistema
-    'admin_cliente',     # Nivel 10: Dueño de la organización
+    'admin_cliente',     # Nivel 10: Dueño de la organización/cliente
     'admin_empresa',     # Nivel 20: Administrador de empresa
-    'jefe_unidad',       # Nivel 30: Jefe de unidad/departamento
+    'jefe',              # Nivel 30: Jefe / Supervisor
     'usuario',           # Nivel 100: Usuario regular
-    'visitante',         # Nivel 110: Visitante temporal
+    'visitante',         # Nivel 110: Visitante
+    'escaner',           # Nivel 120: Solo escanea QR
 ]
 
 ROLES_ADMIN = ['super_admin', 'admin_cliente', 'admin_empresa']
-ROLES_GESTION = ['admin_cliente', 'admin_empresa', 'jefe_unidad']
+ROLES_GESTION = ['admin_cliente', 'admin_empresa', 'jefe']
 
 # =====================================================
 # CONFIGURACIÓN ARGON2 EXCLUSIVO
 # - Solo Argon2 para generar y verificar
 # - Máxima seguridad para datos sensibles
-# - Sin compatibilidad con bcrypt (más limpio, más seguro)
 # =====================================================
 
 pwd_context = CryptContext(
@@ -82,7 +86,7 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -
               - roles: lista de roles internos
               - empresa_id: UUID de la empresa (puede ser null para admin_cliente)
               - cliente_id: UUID del cliente (para admin_cliente)
-              - rol_global: super_admin, admin_cliente, admin_empresa, usuario, visitante
+              - rol_global: super_admin, admin_cliente, admin_empresa, jefe, usuario, visitante, escaner
               - area: área del personal
               - username: nombre de usuario
         expires_delta: Tiempo de expiración personalizado (opcional)
@@ -146,10 +150,10 @@ def has_role(user_roles: List[str], required_roles: List[str]) -> bool:
     if not user_roles:
         return False
     
-    user_roles_lower = [r.lower() for r in user_roles]
+    user_roles_lower = [r.lower() for r in user_roles if isinstance(r, str)]
     
     # Admins tienen acceso total
-    if any(admin_role in user_roles_lower for admin_role in ['super_admin', 'admin_cliente', 'admin']):
+    if any(admin_role in user_roles_lower for admin_role in ['super_admin', 'admin_cliente', 'admin_empresa']):
         return True
     
     # Verificar si tiene alguno de los roles requeridos
@@ -165,7 +169,10 @@ def has_rol_global(user_rol_global: str, allowed_roles: List[str]) -> bool:
     - super_admin: acceso a TODO
     - admin_cliente: acceso a sus empresas
     - admin_empresa: acceso a su empresa
+    - jefe: acceso a su equipo
     - usuario: acceso limitado
+    - visitante: acceso mínimo
+    - escaner: solo escanea QR
     
     Args:
         user_rol_global: Rol global del usuario
@@ -177,12 +184,8 @@ def has_rol_global(user_rol_global: str, allowed_roles: List[str]) -> bool:
     if not user_rol_global:
         return False
     
-    # super_admin tiene acceso total
+    # super_admin tiene acceso total a todo
     if user_rol_global == "super_admin":
-        return True
-    
-    # admin_cliente tiene acceso a funciones de gestión
-    if user_rol_global == "admin_cliente" and any(r in allowed_roles for r in ROLES_ADMIN + ROLES_GESTION):
         return True
     
     # Verificar rol específico
@@ -236,6 +239,18 @@ def is_admin_empresa(user_rol_global: str) -> bool:
     """
     return user_rol_global == "admin_empresa"
 
+def is_jefe(user_rol_global: str) -> bool:
+    """
+    Verifica si el usuario es jefe
+    
+    Args:
+        user_rol_global: Rol global del usuario
+    
+    Returns:
+        bool: True si es jefe
+    """
+    return user_rol_global == "jefe"
+
 def get_role_level(user_rol_global: str) -> int:
     """
     Retorna el nivel jerárquico del rol
@@ -250,9 +265,10 @@ def get_role_level(user_rol_global: str) -> int:
         'super_admin': 0,
         'admin_cliente': 10,
         'admin_empresa': 20,
-        'jefe_unidad': 30,
+        'jefe': 30,
         'usuario': 100,
         'visitante': 110,
+        'escaner': 120,
     }
     return niveles.get(user_rol_global, 999)
 

@@ -1,6 +1,7 @@
 # schemas/personal.py
-# VERSIÓN COMPLETA - CON SOPORTE PARA MÚLTIPLES TIPOS DE JEFATURA + VISITANTE
+# VERSIÓN COMPLETA - CON SOPORTE PARA MÚLTIPLES TIPOS DE JEFATURA + VISITANTE + EMPRESA_ID
 # Compatible con formato legacy (array) y nuevo (objeto)
+# 🆕 ROLES ACTUALIZADOS: alineados con app/utils/roles.py
 
 from pydantic import BaseModel, EmailStr, Field, validator
 from typing import Optional, List, Dict, Any
@@ -8,12 +9,36 @@ from datetime import date, datetime
 from uuid import UUID
 
 # =====================================================
-# LISTA DE ROLES VÁLIDOS (CENTRALIZADA)
+# LISTA DE ROLES VÁLIDOS (ALINEADA CON roles.py)
 # =====================================================
 ROLES_VALIDOS = [
-    'admin', 'jefe_grupo', 'jefe_area', 'jefe_departamento', 
-    'jefe_direccion', 'recursos_humanos', 'oficina_central',
-    'oficial_permanencia', 'control_qr', 'usuario', 'visitante'
+    # Roles del sistema (fuente: app/utils/roles.py)
+    'super_admin',
+    'admin_cliente',
+    'admin_empresa',
+    'jefe',
+    'usuario',
+    'visitante',
+    'escaner',
+    # Roles legacy (mantener compatibilidad hacia atrás)
+    'admin',
+    'jefe_grupo',
+    'jefe_area',
+    'jefe_departamento',
+    'jefe_direccion',
+    'jefe_subdireccion',
+    'jefe_division',
+    'jefe_unidad',
+    'jefe_oficina',
+    'jefe_servicio',
+    'jefe_seccion',
+    'jefe_sede',
+    'jefe_region',
+    'jefe_equipo',
+    'recursos_humanos',
+    'oficina_central',
+    'oficial_permanencia',
+    'control_qr',
 ]
 
 # =====================================================
@@ -49,6 +74,9 @@ class PersonalBase(BaseModel):
     numero_colegiatura: Optional[str] = None
     condicion: Optional[str] = None
     observaciones: Optional[str] = None
+    
+    # 🆕 CAMPO EMPRESA_ID
+    empresa_id: Optional[UUID] = None
     
     # =====================================================
     # CAMPOS DE JEFATURA (COMPATIBILIDAD DUAL)
@@ -105,14 +133,22 @@ class PersonalCreate(PersonalBase):
         """Validar que los roles sean válidos"""
         for rol in v:
             if rol not in ROLES_VALIDOS:
-                raise ValueError(f"Rol inválido: {rol}")
+                raise ValueError(f"Rol inválido: {rol}. Roles válidos: {', '.join(ROLES_VALIDOS)}")
         return v
     
     @validator('areas_que_jefatura')
     def validar_areas_jefatura_creacion(cls, v, values):
-        """Validar que jefe_area tenga al menos un área asignada"""
+        """Validar que jefes tengan al menos un área asignada"""
         roles = values.get('roles', [])
-        if 'jefe_area' in roles:
+        # Verificar si tiene rol de jefe (cualquier variante)
+        es_jefe = any(r in roles for r in [
+            'jefe', 'jefe_area', 'jefe_grupo', 'jefe_departamento',
+            'jefe_direccion', 'jefe_subdireccion', 'jefe_division',
+            'jefe_unidad', 'jefe_oficina', 'jefe_servicio',
+            'jefe_seccion', 'jefe_sede', 'jefe_region', 'jefe_equipo'
+        ])
+        
+        if es_jefe:
             areas_legacy = v or []
             areas_nuevo = values.get('areas_jefatura', {})
             areas_area = areas_nuevo.get('area', []) if areas_nuevo else []
@@ -120,7 +156,7 @@ class PersonalCreate(PersonalBase):
             areas_sin_prefijo = [a for a in areas_legacy if ':' not in a]
             total_areas = len(areas_area) + len(areas_con_prefijo) + len(areas_sin_prefijo)
             if total_areas == 0:
-                raise ValueError("Los jefes de área deben tener al menos un área asignada")
+                raise ValueError("Los jefes deben tener al menos un área asignada para jefaturar")
         return v
 
 
@@ -141,6 +177,7 @@ class PersonalUpdate(BaseModel):
     fecha_ingreso: Optional[date] = None
     activo: Optional[bool] = None
     roles: Optional[List[str]] = None
+    empresa_id: Optional[UUID] = None
     areas_que_jefatura: Optional[List[str]] = Field(default=[])
     areas_jefatura: Optional[Dict[str, List[str]]] = Field(default={})
 
@@ -157,6 +194,15 @@ class PersonalUpdate(BaseModel):
         if v is None: return v
         valores_permitidos = ['M', 'F', 'No especificado']
         if v not in valores_permitidos: return "No especificado"
+        return v
+    
+    @validator('roles')
+    def validar_roles_update(cls, v):
+        """Validar que los roles sean válidos en actualización"""
+        if v is None: return v
+        for rol in v:
+            if rol not in ROLES_VALIDOS:
+                raise ValueError(f"Rol inválido: {rol}. Roles válidos: {', '.join(ROLES_VALIDOS)}")
         return v
     
     @validator('areas_jefatura')
@@ -177,6 +223,7 @@ class PersonalUpdate(BaseModel):
 
 class PersonalResponse(PersonalBase):
     id: UUID
+    empresa_id: Optional[UUID] = None
     fecha_ingreso: Optional[date]
     roles: List[str]
     activo: bool

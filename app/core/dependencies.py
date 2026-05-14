@@ -211,9 +211,8 @@ def require_rol_global(allowed_roles: List[str]):
 # =====================================================
 
 require_admin = require_roles(ROLES_ADMIN)
-require_jefe_area = require_roles(ROLES_ADMIN + ROLES_JEFE)
-require_oficial_permanencia = require_roles(ROLES_ADMIN + ROLES_JEFE)
-require_control_qr = require_roles(ROLES_ADMIN + ROLES_JEFE + ROLES_SOLO_ESCANER)
+require_jefe = require_roles(ROLES_ADMIN + ROLES_JEFE)
+require_escaner = require_roles(ROLES_ADMIN + ROLES_JEFE + ROLES_SOLO_ESCANER)
 require_super_admin = require_rol_global(["super_admin"])
 require_admin_cliente = require_rol_global(["super_admin", "admin_cliente"])
 require_admin_empresa = require_rol_global(["super_admin", "admin_cliente", "admin_empresa"])
