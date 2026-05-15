@@ -1,5 +1,5 @@
 # api/planificacion.py
-# VERSIÓN COMPLETA - ROLES ACTUALIZADOS + mi-horario sin 404
+# VERSIÓN COMPLETA - ROLES ACTUALIZADOS + mi-horario sin 404 + EXCEPCIONES
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from sqlalchemy.orm import Session, joinedload
@@ -99,6 +99,76 @@ def get_jefe_area(db: Session, user_id: UUID):
 @router.get("/health")
 async def health_check():
     return {"status": "healthy", "service": "planificacion", "timestamp": datetime.utcnow().isoformat()}
+
+
+# 🆕 ENDPOINT DE EXCEPCIONES
+@router.get("/excepciones")
+async def obtener_excepciones(
+    fecha: date = Query(...),
+    db: Session = Depends(get_db),
+    current_user: Usuario = Depends(get_current_user)
+):
+    """
+    Obtiene las excepciones de planificación para una fecha específica.
+    Busca: solicitudes de cambio aprobadas (vacaciones, suspensiones, feriados)
+    y descansos médicos activos para esa fecha.
+    """
+    try:
+        excepciones = []
+        
+        # 1. Buscar solicitudes de cambio aprobadas para esa fecha
+        solicitudes = db.query(SolicitudCambio).filter(
+            SolicitudCambio.fecha_cambio == fecha,
+            SolicitudCambio.estado.in_(['aprobada', 'aprobado'])
+        ).all()
+        
+        for sol in solicitudes:
+            personal = db.query(Personal).filter(Personal.id == sol.empleado_id).first()
+            excepciones.append({
+                "id": str(sol.id),
+                "personal_id": str(sol.empleado_id),
+                "personal_nombre": personal.nombre if personal else "Desconocido",
+                "tipo": sol.tipo or "CAMBIO",
+                "motivo": sol.motivo,
+                "fecha": fecha.isoformat(),
+                "turno_original": sol.turno_original,
+                "turno_solicitado": sol.turno_solicitado if hasattr(sol, 'turno_solicitado') else None,
+            })
+        
+        # 2. Buscar descansos médicos activos para esa fecha
+        from app.models.descanso_medico import DescansoMedico
+        
+        dms = db.query(DescansoMedico).filter(
+            DescansoMedico.fecha_inicio <= fecha,
+            DescansoMedico.fecha_fin >= fecha,
+            DescansoMedico.estado == 'aprobado'
+        ).all()
+        
+        for dm in dms:
+            personal = db.query(Personal).filter(Personal.id == dm.paciente_id).first()
+            excepciones.append({
+                "id": str(dm.id),
+                "personal_id": str(dm.paciente_id),
+                "personal_nombre": personal.nombre if personal else "Desconocido",
+                "tipo": "DM",
+                "motivo": dm.diagnostico or "Descanso médico",
+                "fecha": fecha.isoformat(),
+                "fecha_inicio": dm.fecha_inicio.isoformat(),
+                "fecha_fin": dm.fecha_fin.isoformat(),
+            })
+        
+        return {
+            "fecha": fecha.isoformat(),
+            "total": len(excepciones),
+            "excepciones": excepciones
+        }
+    except Exception as e:
+        logger.error(f"Error en obtener_excepciones: {str(e)}")
+        return {
+            "fecha": fecha.isoformat(),
+            "total": 0,
+            "excepciones": []
+        }
 
 
 @router.get("/dia/{fecha}")
@@ -235,7 +305,7 @@ async def get_mi_horario(anio: int, mes: int, db: Session = Depends(get_db), cur
         if mes < 1 or mes > 12: raise HTTPException(status_code=400, detail="Mes inválido")
         personal_id = current_user.personal_id
         if not personal_id:
-            return []  # ✅ Sin personal_id, devolver vacío
+            return []
         
         fecha_inicio = date(anio, mes, 1)
         fecha_fin = date(anio + 1, 1, 1) if mes == 12 else date(anio, mes + 1, 1)
@@ -260,7 +330,7 @@ async def get_mi_estadisticas(anio: int, mes: int, db: Session = Depends(get_db)
     try:
         personal_id = current_user.personal_id
         if not personal_id:
-            return {"total_turnos": 0, "turnos_por_tipo": {}, "mes": mes, "anio": anio}  # ✅ Sin personal_id
+            return {"total_turnos": 0, "turnos_por_tipo": {}, "mes": mes, "anio": anio}
         
         fecha_inicio = date(anio, mes, 1)
         fecha_fin = date(anio + 1, 1, 1) if mes == 12 else date(anio, mes + 1, 1)
