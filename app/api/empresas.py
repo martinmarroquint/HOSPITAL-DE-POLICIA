@@ -1,12 +1,13 @@
 # app/api/empresas.py
 # GESTIÓN DE EMPRESAS - SUPER ADMIN + ADMIN CLIENTE
-# Soporte para jerarquía: super_admin → admin_cliente → admin_empresa
+# VERSIÓN CORREGIDA - CREA PERSONAL AUTOMÁTICAMENTE
 
 from fastapi import APIRouter, Depends, HTTPException, status, Body, Query
 from sqlalchemy.orm import Session
 from typing import List, Optional
 from uuid import UUID
 from datetime import datetime, timedelta, timezone, date
+import re
 
 from app.database import get_db
 from app.core.dependencies import get_current_super_admin, get_current_active_user
@@ -27,7 +28,6 @@ def ahora_utc():
 
 def generar_subdominio(nombre: str) -> str:
     """Genera un subdominio limpio a partir del nombre de la empresa"""
-    import re
     sub = nombre.lower().strip()
     sub = sub.replace('á', 'a').replace('é', 'e').replace('í', 'i').replace('ó', 'o').replace('ú', 'u')
     sub = sub.replace('ñ', 'n')
@@ -149,12 +149,17 @@ async def crear_empresa(
 ):
     """
     Crea una nueva empresa con su administrador (solo super_admin).
+    FLUJO COMPLETO:
+    1. Crea la empresa
+    2. Crea el registro personal del admin
+    3. Crea el usuario auth vinculado al personal
     """
     subdominio = data.subdominio or generar_subdominio(data.nombre)
     dominio_email = data.dominio_email or f"{subdominio}.com"
     email_contacto = data.email_contacto or f"admin@{dominio_email}"
     admin_email = data.admin_email or f"admin@{dominio_email}"
     
+    # Validaciones
     if db.query(Empresa).filter(Empresa.subdominio == subdominio).first():
         raise HTTPException(status_code=400, detail=f"El subdominio '{subdominio}' ya está registrado")
     
@@ -162,8 +167,11 @@ async def crear_empresa(
         raise HTTPException(status_code=400, detail=f"El email '{admin_email}' ya está registrado")
     
     fecha_prueba = (ahora_utc() + timedelta(days=30)).date()
+    ahora = ahora_utc()
     
-    # Crear empresa
+    # =====================================================
+    # 1. CREAR EMPRESA
+    # =====================================================
     empresa = Empresa(
         nombre=data.nombre,
         nombre_corto=data.nombre_corto or (data.nombre.split()[0] if data.nombre else None),
@@ -182,12 +190,36 @@ async def crear_empresa(
     db.add(empresa)
     db.flush()
     
-    # Crear admin
+    # =====================================================
+    # 2. 🆕 CREAR REGISTRO PERSONAL DEL ADMIN
+    # =====================================================
+    admin_personal = Personal(
+        dni=f"ADM{empresa.id.hex[:6].upper()}",
+        nombre=f"ADMINISTRADOR {data.nombre.upper()}",
+        email=admin_email,
+        area="ADMINISTRACION",
+        grado="ADMIN",
+        roles=["admin_empresa", "usuario"],
+        activo=True,
+        condicion="Titular",
+        empresa_id=empresa.id,
+        sexo="No especificado",
+        areas_que_jefatura=[],
+        areas_jefatura={"area": [], "grupo": [], "departamento": [], "direccion": []},
+        fecha_ingreso=ahora.date()
+    )
+    db.add(admin_personal)
+    db.flush()
+    
+    # =====================================================
+    # 3. 🆕 CREAR USUARIO AUTH VINCULADO AL PERSONAL
+    # =====================================================
     admin_usuario = Usuario(
         email=admin_email,
         username=admin_email,
         password_hash=get_password_hash(data.admin_password),
         empresa_id=empresa.id,
+        personal_id=admin_personal.id,  # 🆕 Vinculado al registro personal
         rol_global="admin_empresa",
         roles=["admin_empresa", "usuario"],
         activo=True
@@ -195,6 +227,9 @@ async def crear_empresa(
     db.add(admin_usuario)
     db.flush()
     
+    # =====================================================
+    # 4. VINCULAR ADMIN A LA EMPRESA
+    # =====================================================
     empresa.admin_id = admin_usuario.id
     db.commit()
     db.refresh(empresa)
@@ -207,6 +242,7 @@ async def crear_empresa(
         "dominio_email": empresa.dominio_email,
         "email_contacto": empresa.email_contacto,
         "admin_email": admin_email,
+        "admin_personal_id": str(admin_personal.id),
         "plan": empresa.plan,
         "fecha_vencimiento": empresa.fecha_vencimiento.isoformat() if empresa.fecha_vencimiento else None,
         "dias_prueba": 30

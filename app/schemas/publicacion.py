@@ -1,5 +1,5 @@
 # app/schemas/publicacion.py
-# SCHEMAS PARA PUBLICACIONES - CON EMPRESA_ID Y AUDIENCIA
+# SCHEMAS PARA PUBLICACIONES - CON EMPRESA_ID, AUDIENCIA Y DESTINATARIO_ID
 
 from pydantic import BaseModel, Field, validator
 from typing import Optional, List, Dict, Any
@@ -20,7 +20,8 @@ class PublicacionBase(BaseModel):
     categoria: Optional[str] = "general"
     es_automatica: Optional[bool] = False
     empresa_id: Optional[UUID] = None
-    audiencia: Optional[str] = "toda_empresa"  # 🆕 CAMPO AUDIENCIA
+    audiencia: Optional[str] = "toda_empresa"  # toda_empresa, personal, visitantes, privado
+    destinatario_id: Optional[UUID] = None  # 🆕 Para mensajes privados
     
     @validator('tipo')
     def validar_tipo(cls, v):
@@ -32,7 +33,7 @@ class PublicacionBase(BaseModel):
     @validator('audiencia')
     def validar_audiencia(cls, v):
         if v:
-            audiencias_validas = ['toda_empresa', 'personal', 'visitantes']
+            audiencias_validas = ['toda_empresa', 'personal', 'visitantes', 'privado']
             if v not in audiencias_validas:
                 raise ValueError(f"Audiencia debe ser una de: {audiencias_validas}")
         return v
@@ -66,7 +67,8 @@ class PublicacionUpdate(BaseModel):
     descripcion: Optional[str] = None
     categoria: Optional[str] = None
     empresa_id: Optional[UUID] = None
-    audiencia: Optional[str] = None  # 🆕 CAMPO AUDIENCIA
+    audiencia: Optional[str] = None  # toda_empresa, personal, visitantes, privado
+    destinatario_id: Optional[UUID] = None  # 🆕 Para mensajes privados
     fecha_expiracion: Optional[datetime] = None
     activo: Optional[bool] = None
     fijado: Optional[bool] = None
@@ -83,7 +85,7 @@ class PublicacionUpdate(BaseModel):
     @validator('audiencia')
     def validar_audiencia(cls, v):
         if v:
-            audiencias_validas = ['toda_empresa', 'personal', 'visitantes']
+            audiencias_validas = ['toda_empresa', 'personal', 'visitantes', 'privado']
             if v not in audiencias_validas:
                 raise ValueError(f"Audiencia debe ser una de: {audiencias_validas}")
         return v
@@ -99,7 +101,9 @@ class PublicacionResponse(PublicacionBase):
     autor_area: Optional[str] = None
     autor_iniciales: Optional[str] = None
     empresa_id: Optional[UUID] = None
-    audiencia: Optional[str] = "toda_empresa"  # 🆕 CAMPO AUDIENCIA
+    audiencia: Optional[str] = "toda_empresa"
+    destinatario_id: Optional[UUID] = None  # 🆕 Para mensajes privados
+    es_privado: Optional[bool] = False  # 🆕 Flag para el frontend
     fecha_publicacion: datetime
     fecha_expiracion: Optional[datetime] = None
     activo: bool

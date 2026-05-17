@@ -1,5 +1,5 @@
 # app/models/publicacion.py
-# MODELO DE PUBLICACIONES - CON EMPRESA_ID Y AUDIENCIA
+# MODELO DE PUBLICACIONES - CON EMPRESA_ID, AUDIENCIA Y DESTINATARIO_ID (FK a personal)
 
 from sqlalchemy import Column, String, DateTime, Boolean, JSON, Text, ForeignKey, Integer
 from sqlalchemy.dialects.postgresql import UUID
@@ -33,7 +33,7 @@ class Publicacion(Base):
     es_automatica = Column(Boolean, default=False)
     
     # 🆕 CAMPO AUDIENCIA - Define quién puede ver la publicación
-    # Valores: 'toda_empresa' (default), 'personal', 'visitantes'
+    # Valores: 'toda_empresa' (default), 'personal', 'visitantes', 'privado'
     audiencia = Column(String(20), default='toda_empresa', nullable=False, index=True)
     
     # =====================================================
@@ -43,6 +43,9 @@ class Publicacion(Base):
     
     # 🆕 CAMPO EMPRESA_ID - Para filtrar publicaciones por empresa
     empresa_id = Column(UUID(as_uuid=True), ForeignKey("empresas.id"), nullable=True, index=True)
+    
+    # 🆕 CAMPO DESTINATARIO_ID - Para mensajes privados (FK a personal)
+    destinatario_id = Column(UUID(as_uuid=True), ForeignKey("personal.id"), nullable=True)
     
     # =====================================================
     # CONTROL DE PUBLICACIÓN
@@ -68,6 +71,7 @@ class Publicacion(Base):
     # =====================================================
     vistas = relationship("PublicacionVista", back_populates="publicacion", cascade="all, delete-orphan")
     autor = relationship("Usuario", foreign_keys=[autor_id])
+    destinatario = relationship("Personal", foreign_keys=[destinatario_id])  # 🆕 FK a personal
 
     def __repr__(self):
         return f"<Publicacion {self.titulo[:30]}... (ID: {self.id})>"
