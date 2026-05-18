@@ -1,5 +1,5 @@
 # app/models/__init__.py
-# VERSIÓN ACTUALIZADA - CON CLIENTE, EMPRESA MEJORADA Y JERARQUÍA
+# VERSIÓN ACTUALIZADA - CON JUSTIFICACIONES DE ASISTENCIA PARA VISITANTES
 
 from app.models.usuario import Usuario
 from app.models.personal import Personal
@@ -8,6 +8,7 @@ from app.models.cliente import Cliente
 from app.models.planificacion import Planificacion
 from app.models.planificacion_borrador import PlanificacionBorrador
 from app.models.asistencia import Asistencia
+from app.models.justificacion_asistencia import JustificacionAsistencia
 from app.models.descanso_medico import DescansoMedico
 from app.models.solicitud_cambio import SolicitudCambio
 from app.models.solicitud import Solicitud, TipoSolicitud, EstadoSolicitud
@@ -51,8 +52,9 @@ __all__ = [
     "PlanificacionBorrador",
     "ConfiguracionMensual",
     
-    # ASISTENCIA
+    # ASISTENCIA Y JUSTIFICACIONES
     "Asistencia",
+    "JustificacionAsistencia",
     "QRRegistro",
     
     # SALUD

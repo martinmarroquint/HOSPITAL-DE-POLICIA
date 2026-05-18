@@ -1,4 +1,4 @@
-# api/asistencia.py - VERSIÓN ACTUALIZADA CON NUEVOS ROLES SIMPLIFICADOS
+# api/asistencia.py - VERSIÓN COMPLETA CON JUSTIFICACIONES INTEGRADAS
 
 from fastapi import APIRouter, Depends, HTTPException, Query, BackgroundTasks, Body
 from fastapi.responses import Response, JSONResponse
@@ -19,6 +19,7 @@ from app.models.personal import Personal
 from app.models.planificacion import Planificacion
 from app.models.qr import QRRegistro
 from app.models.usuario import Usuario
+from app.models.justificacion_asistencia import JustificacionAsistencia
 from app.schemas.asistencia import (
     AsistenciaCreate, AsistenciaResponse, AsistenciaQR,
     JustificacionCreate, EstadisticasAsistencia, IncidenciaAsistencia
@@ -39,6 +40,8 @@ ROLES_REGISTRAR_ASISTENCIA = ["admin_empresa", "jefe", "escaner"]
 ROLES_ESTADISTICAS = ["admin_empresa", "jefe"]
 
 ROLES_PERSONAL_ACTIVO = ["admin_empresa", "jefe", "escaner"]
+
+ROLES_JUSTIFICAR = ["admin_empresa", "jefe", "escaner"]
 
 # =====================================================
 # FUNCIONES AUXILIARES
@@ -87,7 +90,7 @@ def extraer_empleado_id_qr(payload: dict, db: Session) -> Optional[str]:
 # CALCULAR INCIDENCIAS (USANDO HORARIOS DE TURNOS CONFIGURADOS)
 # =====================================================
 
-def calcular_incidencias(tipo: str, hora_registro: datetime, turno_codigo: str, fecha: date):
+def calcular_incidencias(tipo: str, hora_registro: datetime, turno_codigo: str, fecha: date, db: Session = None):
     """Calcula tardanza usando los horarios de los turnos configurados dinámicamente"""
     incidencias = {}
     
@@ -97,27 +100,28 @@ def calcular_incidencias(tipo: str, hora_registro: datetime, turno_codigo: str, 
         return {"puntual": {"minutos": 0, "tipo": "puntual", "mensaje": "Registro exitoso"}}
     
     # Para otros turnos, buscar en la configuración
-    from app.models.config_turno import ConfigTurno
-    turno_config = db.query(ConfigTurno).filter(
-        ConfigTurno.codigo == turno_codigo,
-        ConfigTurno.activo == True
-    ).first()
-    
-    if not turno_config or not turno_config.hora_inicio:
-        return {"puntual": {"minutos": 0, "tipo": "puntual", "mensaje": "Registro exitoso"}}
-    
-    hora_esperada = convertir_a_decimal(turno_config.hora_inicio)
-    hora_decimal = convertir_a_decimal(hora_registro)
-    tolerancia = 15  # 15 minutos de tolerancia
-    
-    if tipo == "ENTRADA":
-        diferencia_minutos = int((hora_decimal - hora_esperada) * 60)
-        if diferencia_minutos > tolerancia:
-            incidencias["tardanza"] = {"minutos": diferencia_minutos, "horas": round(diferencia_minutos / 60, 1), "tipo": "tardanza", "mensaje": f"Llego {diferencia_minutos} minutos tarde"}
-        elif diferencia_minutos < -tolerancia:
-            incidencias["entrada_temprana"] = {"minutos": abs(diferencia_minutos), "horas": round(abs(diferencia_minutos) / 60, 1), "tipo": "entrada_temprana", "mensaje": f"Llego {abs(diferencia_minutos)} minutos temprano"}
-        else:
-            incidencias["puntual"] = {"minutos": 0, "tipo": "puntual", "mensaje": "Llego puntual"}
+    if db:
+        from app.models.config_turno import ConfigTurno
+        turno_config = db.query(ConfigTurno).filter(
+            ConfigTurno.codigo == turno_codigo,
+            ConfigTurno.activo == True
+        ).first()
+        
+        if not turno_config or not turno_config.hora_inicio:
+            return {"puntual": {"minutos": 0, "tipo": "puntual", "mensaje": "Registro exitoso"}}
+        
+        hora_esperada = convertir_a_decimal(turno_config.hora_inicio)
+        hora_decimal = convertir_a_decimal(hora_registro)
+        tolerancia = 15  # 15 minutos de tolerancia
+        
+        if tipo == "ENTRADA":
+            diferencia_minutos = int((hora_decimal - hora_esperada) * 60)
+            if diferencia_minutos > tolerancia:
+                incidencias["tardanza"] = {"minutos": diferencia_minutos, "horas": round(diferencia_minutos / 60, 1), "tipo": "tardanza", "mensaje": f"Llego {diferencia_minutos} minutos tarde"}
+            elif diferencia_minutos < -tolerancia:
+                incidencias["entrada_temprana"] = {"minutos": abs(diferencia_minutos), "horas": round(abs(diferencia_minutos) / 60, 1), "tipo": "entrada_temprana", "mensaje": f"Llego {abs(diferencia_minutos)} minutos temprano"}
+            else:
+                incidencias["puntual"] = {"minutos": 0, "tipo": "puntual", "mensaje": "Llego puntual"}
     
     if not incidencias:
         incidencias["puntual"] = {"minutos": 0, "tipo": "puntual", "mensaje": "Registro exitoso"}
@@ -160,13 +164,14 @@ async def health_check():
         return JSONResponse(status_code=500, content={"status": "unhealthy", "error": str(e)})
 
 # =====================================================
-# ENDPOINTS
+# ENDPOINTS DE ASISTENCIA
 # =====================================================
 
 @router.get("/registros-hoy")
 async def registros_hoy(
     fecha: date = Query(default_factory=date.today),
     empresa_id: Optional[UUID] = Query(None),
+    incluir_justificaciones: bool = Query(False),
     db: Session = Depends(get_db),
     current_user = Depends(require_roles(ROLES_VER_ASISTENCIA))
 ):
@@ -180,6 +185,21 @@ async def registros_hoy(
             query = aplicar_filtro_empresa(query, current_user, Asistencia)
         
         registros = query.order_by(Asistencia.timestamp.desc()).all()
+        
+        # Obtener justificaciones del día si se solicita
+        justificaciones_dict = {}
+        if incluir_justificaciones:
+            justificaciones = db.query(JustificacionAsistencia).filter(
+                JustificacionAsistencia.fecha == fecha
+            ).all()
+            for j in justificaciones:
+                justificaciones_dict[str(j.personal_id)] = {
+                    "id": str(j.id),
+                    "tipo": j.tipo,
+                    "motivo": j.motivo,
+                    "created_at": j.created_at.isoformat() if j.created_at else None
+                }
+        
         resultado = []
         for r in registros:
             personal = db.query(Personal).filter(Personal.id == r.personal_id).first()
@@ -192,16 +212,21 @@ async def registros_hoy(
                         controlador_nombre = cp.nombre if cp else controlador.email
                     else:
                         controlador_nombre = controlador.email
-            resultado.append({
+            
+            registro_data = {
                 "id": str(r.id), "personal_id": str(r.personal_id),
                 "nombre": personal.nombre if personal else "Desconocido",
                 "grado": personal.grado if personal else "",
+                "area": personal.area if personal else "",
                 "timestamp": r.timestamp.isoformat(),
                 "fecha": r.timestamp.strftime("%Y-%m-%d") if r.timestamp else "",
                 "hora": r.timestamp.strftime("%H:%M:%S") if r.timestamp else "",
                 "tipo": r.tipo, "tipo_registro": r.tipo_registro,
-                "turno_codigo": r.turno_codigo, "controlador": controlador_nombre
-            })
+                "turno_codigo": r.turno_codigo, "controlador": controlador_nombre,
+                "justificacion": justificaciones_dict.get(str(r.personal_id))
+            }
+            resultado.append(registro_data)
+        
         return resultado
     except Exception as e:
         logger.error(f"Error en registros_hoy: {str(e)}")
@@ -351,6 +376,22 @@ async def get_asistencia_personal(
         query = aplicar_filtro_empresa(query, current_user, Asistencia)
         registros = query.order_by(Asistencia.timestamp.desc()).all()
         
+        # Obtener justificaciones del período
+        justificaciones = db.query(JustificacionAsistencia).filter(
+            JustificacionAsistencia.personal_id == personal_id,
+            JustificacionAsistencia.fecha >= fecha_inicio,
+            JustificacionAsistencia.fecha <= fecha_fin
+        ).all()
+        
+        justificaciones_dict = {}
+        for j in justificaciones:
+            justificaciones_dict[j.fecha.isoformat()] = {
+                "id": str(j.id),
+                "tipo": j.tipo,
+                "motivo": j.motivo,
+                "created_at": j.created_at.isoformat() if j.created_at else None
+            }
+        
         resultado = []
         for r in registros:
             timestamp_peru = r.timestamp
@@ -358,19 +399,373 @@ async def get_asistencia_personal(
                 timestamp_peru = pytz.UTC.localize(timestamp_peru).astimezone(PERU_TZ)
             else:
                 timestamp_peru = timestamp_peru.astimezone(PERU_TZ)
+            
+            fecha_str = timestamp_peru.date().isoformat()
             resultado.append({
-                "id": str(r.id), "fecha": timestamp_peru.date().isoformat(),
-                "hora": timestamp_peru.time().isoformat(), "timestamp": timestamp_peru.isoformat(),
-                "tipo": r.tipo, "tipo_registro": r.tipo_registro, "turno": r.turno_codigo
+                "id": str(r.id), 
+                "fecha": fecha_str,
+                "hora": timestamp_peru.time().isoformat(), 
+                "timestamp": timestamp_peru.isoformat(),
+                "tipo": r.tipo, 
+                "tipo_registro": r.tipo_registro, 
+                "turno": r.turno_codigo,
+                "justificacion": justificaciones_dict.get(fecha_str)
             })
         
         return {
-            "personal_id": str(personal_id), "personal_nombre": personal.nombre,
+            "personal_id": str(personal_id), 
+            "personal_nombre": personal.nombre,
             "periodo": {"inicio": fecha_inicio.isoformat(), "fin": fecha_fin.isoformat()},
-            "total_registros": len(resultado), "registros": resultado
+            "total_registros": len(resultado), 
+            "registros": resultado,
+            "total_justificaciones": len(justificaciones)
         }
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Error en get_asistencia_personal: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error al obtener historial: {str(e)}")
+
+# =====================================================
+# ENDPOINTS DE JUSTIFICACIONES
+# =====================================================
+
+@router.post("/justificar")
+async def justificar_asistencia(
+    data: dict = Body(...),
+    db: Session = Depends(get_db),
+    current_user: Usuario = Depends(require_roles(ROLES_JUSTIFICAR))
+):
+    """
+    Registra o actualiza una justificación de asistencia.
+    Body: { personal_id, fecha, tipo, motivo, notificar_padre }
+    """
+    try:
+        # Validar campos requeridos
+        required_fields = ['personal_id', 'fecha', 'tipo', 'motivo']
+        for field in required_fields:
+            if field not in data:
+                raise HTTPException(status_code=400, detail=f"Campo requerido: {field}")
+        
+        # Validar tipo de justificación
+        tipos_validos = ['LLEGADA_TARDE', 'INASISTENCIA', 'SALIDA_TEMPRANA', 'OTRO']
+        if data['tipo'] not in tipos_validos:
+            raise HTTPException(status_code=400, detail=f"Tipo inválido. Debe ser: {', '.join(tipos_validos)}")
+        
+        # Verificar que el personal existe
+        personal = db.query(Personal).filter(Personal.id == data['personal_id']).first()
+        if not personal:
+            raise HTTPException(status_code=404, detail="Personal no encontrado")
+        
+        # Verificar permisos de empresa
+        verificar_permiso_empresa(current_user, personal, "justificar asistencia")
+        
+        # Parsear fecha
+        try:
+            fecha = date.fromisoformat(data['fecha'])
+        except:
+            raise HTTPException(status_code=400, detail="Formato de fecha inválido. Use YYYY-MM-DD")
+        
+        # Verificar si ya existe justificación para esta fecha
+        existente = db.query(JustificacionAsistencia).filter(
+            JustificacionAsistencia.personal_id == data['personal_id'],
+            JustificacionAsistencia.fecha == fecha
+        ).first()
+        
+        if existente:
+            # Actualizar justificación existente
+            existente.tipo = data['tipo']
+            existente.motivo = data['motivo']
+            existente.notificar_padre = data.get('notificar_padre', True)
+            existente.justificado_por = current_user.id
+            existente.updated_at = datetime.utcnow()
+            justificacion = existente
+            accion = "actualizada"
+        else:
+            # Crear nueva justificación
+            justificacion = JustificacionAsistencia(
+                personal_id=data['personal_id'],
+                fecha=fecha,
+                tipo=data['tipo'],
+                motivo=data['motivo'],
+                notificar_padre=data.get('notificar_padre', True),
+                justificado_por=current_user.id,
+                empresa_id=current_user.empresa_id
+            )
+            db.add(justificacion)
+            accion = "creada"
+        
+        db.commit()
+        db.refresh(justificacion)
+        
+        # Notificar si se solicita
+        if data.get('notificar_padre', True):
+            try:
+                from app.api.notificaciones import crear_notificacion
+                
+                # Buscar jefes/administradores para notificar
+                jefes = db.query(Personal).filter(
+                    Personal.activo == True,
+                    Personal.empresa_id == current_user.empresa_id,
+                    Personal.roles.cast(String).like('%jefe%')
+                ).all()
+                
+                for jefe in jefes:
+                    usuario_jefe = db.query(Usuario).filter(
+                        Usuario.personal_id == jefe.id,
+                        Usuario.activo == True
+                    ).first()
+                    
+                    if usuario_jefe:
+                        crear_notificacion(
+                            db=db,
+                            usuario_id=usuario_jefe.id,
+                            tipo="justificacion",
+                            titulo=f"Asistencia justificada - {personal.nombre}",
+                            mensaje=f"{personal.nombre}: {data['tipo']} - {data['motivo'][:100]}"
+                        )
+                
+                logger.info(f"Notificaciones enviadas para justificación de {personal.nombre}")
+            except Exception as e:
+                logger.warning(f"No se pudieron enviar notificaciones: {str(e)}")
+        
+        return {
+            "success": True,
+            "message": f"Justificación {accion} correctamente",
+            "justificacion_id": str(justificacion.id),
+            "tipo": data['tipo'],
+            "accion": accion,
+            "fecha": fecha.isoformat(),
+            "personal_nombre": personal.nombre
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error en justificar_asistencia: {str(e)}")
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Error al guardar justificación: {str(e)}")
+
+@router.get("/justificacion/{personal_id}/{fecha}")
+async def verificar_justificacion(
+    personal_id: UUID,
+    fecha: date,
+    db: Session = Depends(get_db),
+    current_user = Depends(require_roles(ROLES_VER_ASISTENCIA))
+):
+    """
+    Verifica si existe una justificación para un personal en una fecha específica.
+    """
+    try:
+        personal = db.query(Personal).filter(Personal.id == personal_id).first()
+        if not personal:
+            raise HTTPException(status_code=404, detail="Personal no encontrado")
+        
+        verificar_permiso_empresa(current_user, personal, "ver justificación")
+        
+        justificacion = db.query(JustificacionAsistencia).filter(
+            JustificacionAsistencia.personal_id == personal_id,
+            JustificacionAsistencia.fecha == fecha
+        ).first()
+        
+        if justificacion:
+            # Obtener nombre del que justificó
+            justificador_nombre = "Sistema"
+            if justificacion.justificado_por:
+                justificador = db.query(Usuario).filter(Usuario.id == justificacion.justificado_por).first()
+                if justificador and justificador.personal_id:
+                    jp = db.query(Personal).filter(Personal.id == justificador.personal_id).first()
+                    justificador_nombre = jp.nombre if jp else justificador.email
+        
+            return {
+                "existe": True,
+                "justificacion": {
+                    "id": str(justificacion.id),
+                    "tipo": justificacion.tipo,
+                    "motivo": justificacion.motivo,
+                    "notificar_padre": justificacion.notificar_padre,
+                    "justificado_por": justificador_nombre,
+                    "created_at": justificacion.created_at.isoformat() if justificacion.created_at else None,
+                    "updated_at": justificacion.updated_at.isoformat() if justificacion.updated_at else None
+                }
+            }
+        else:
+            return {
+                "existe": False,
+                "justificacion": None
+            }
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error en verificar_justificacion: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error al verificar justificación: {str(e)}")
+
+@router.get("/justificaciones")
+async def listar_justificaciones(
+    fecha_inicio: Optional[date] = Query(None),
+    fecha_fin: Optional[date] = Query(None),
+    personal_id: Optional[UUID] = Query(None),
+    empresa_id: Optional[UUID] = Query(None),
+    db: Session = Depends(get_db),
+    current_user = Depends(require_roles(ROLES_VER_ASISTENCIA))
+):
+    """
+    Lista justificaciones con filtros opcionales.
+    """
+    try:
+        query = db.query(JustificacionAsistencia)
+        
+        if empresa_id:
+            query = query.filter(JustificacionAsistencia.empresa_id == empresa_id)
+        else:
+            query = aplicar_filtro_empresa(query, current_user, JustificacionAsistencia)
+        
+        if personal_id:
+            query = query.filter(JustificacionAsistencia.personal_id == personal_id)
+        
+        if fecha_inicio:
+            query = query.filter(JustificacionAsistencia.fecha >= fecha_inicio)
+        
+        if fecha_fin:
+            query = query.filter(JustificacionAsistencia.fecha <= fecha_fin)
+        
+        justificaciones = query.order_by(JustificacionAsistencia.fecha.desc()).all()
+        
+        resultado = []
+        for j in justificaciones:
+            personal = db.query(Personal).filter(Personal.id == j.personal_id).first()
+            justificador_nombre = "Sistema"
+            if j.justificado_por:
+                justificador = db.query(Usuario).filter(Usuario.id == j.justificado_por).first()
+                if justificador and justificador.personal_id:
+                    jp = db.query(Personal).filter(Personal.id == justificador.personal_id).first()
+                    justificador_nombre = jp.nombre if jp else justificador.email
+            
+            resultado.append({
+                "id": str(j.id),
+                "personal_id": str(j.personal_id),
+                "personal_nombre": personal.nombre if personal else "Desconocido",
+                "personal_area": personal.area if personal else "",
+                "fecha": j.fecha.isoformat(),
+                "tipo": j.tipo,
+                "motivo": j.motivo,
+                "notificar_padre": j.notificar_padre,
+                "justificado_por": justificador_nombre,
+                "created_at": j.created_at.isoformat() if j.created_at else None
+            })
+        
+        return {
+            "total": len(resultado),
+            "justificaciones": resultado
+        }
+        
+    except Exception as e:
+        logger.error(f"Error en listar_justificaciones: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error al listar justificaciones: {str(e)}")
+
+@router.delete("/justificacion/{justificacion_id}")
+async def eliminar_justificacion(
+    justificacion_id: UUID,
+    db: Session = Depends(get_db),
+    current_user = Depends(require_roles(ROLES_JUSTIFICAR))
+):
+    """
+    Elimina una justificación existente.
+    """
+    try:
+        justificacion = db.query(JustificacionAsistencia).filter(
+            JustificacionAsistencia.id == justificacion_id
+        ).first()
+        
+        if not justificacion:
+            raise HTTPException(status_code=404, detail="Justificación no encontrada")
+        
+        # Verificar permisos de empresa
+        if current_user.empresa_id and justificacion.empresa_id != current_user.empresa_id:
+            raise HTTPException(status_code=403, detail="No tiene acceso a esta justificación")
+        
+        db.delete(justificacion)
+        db.commit()
+        
+        return {
+            "success": True,
+            "message": "Justificación eliminada correctamente"
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error en eliminar_justificacion: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error al eliminar justificación: {str(e)}")
+
+# =====================================================
+# ESTADÍSTICAS (pendiente de implementar si es necesario)
+# =====================================================
+
+@router.get("/estadisticas")
+async def obtener_estadisticas(
+    fecha_inicio: date = Query(...),
+    fecha_fin: date = Query(...),
+    empresa_id: Optional[UUID] = Query(None),
+    db: Session = Depends(get_db),
+    current_user = Depends(require_roles(ROLES_ESTADISTICAS))
+):
+    """
+    Obtiene estadísticas de asistencia incluyendo justificaciones.
+    """
+    try:
+        inicio = datetime.combine(fecha_inicio, datetime.min.time())
+        fin = datetime.combine(fecha_fin, datetime.max.time())
+        
+        # Asistencias
+        query_asistencia = db.query(Asistencia).filter(
+            Asistencia.timestamp >= inicio,
+            Asistencia.timestamp <= fin
+        )
+        if empresa_id:
+            query_asistencia = query_asistencia.filter(Asistencia.empresa_id == empresa_id)
+        else:
+            query_asistencia = aplicar_filtro_empresa(query_asistencia, current_user, Asistencia)
+        
+        total_asistencias = query_asistencia.count()
+        entradas = query_asistencia.filter(Asistencia.tipo == "ENTRADA").count()
+        salidas = query_asistencia.filter(Asistencia.tipo == "SALIDA").count()
+        
+        # Justificaciones
+        query_justificaciones = db.query(JustificacionAsistencia).filter(
+            JustificacionAsistencia.fecha >= fecha_inicio,
+            JustificacionAsistencia.fecha <= fecha_fin
+        )
+        if empresa_id:
+            query_justificaciones = query_justificaciones.filter(JustificacionAsistencia.empresa_id == empresa_id)
+        else:
+            query_justificaciones = aplicar_filtro_empresa(query_justificaciones, current_user, JustificacionAsistencia)
+        
+        total_justificaciones = query_justificaciones.count()
+        
+        # Contar por tipo
+        tipos_justificacion = {}
+        for tipo in ['LLEGADA_TARDE', 'INASISTENCIA', 'SALIDA_TEMPRANA', 'OTRO']:
+            count = query_justificaciones.filter(JustificacionAsistencia.tipo == tipo).count()
+            tipos_justificacion[tipo] = count
+        
+        return {
+            "periodo": {
+                "inicio": fecha_inicio.isoformat(),
+                "fin": fecha_fin.isoformat()
+            },
+            "asistencias": {
+                "total": total_asistencias,
+                "entradas": entradas,
+                "salidas": salidas
+            },
+            "justificaciones": {
+                "total": total_justificaciones,
+                "por_tipo": tipos_justificacion
+            }
+        }
+        
+    except Exception as e:
+        logger.error(f"Error en obtener_estadisticas: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error al obtener estadísticas: {str(e)}")
