@@ -1,6 +1,7 @@
 # app/api/empresas.py
 # GESTIÓN DE EMPRESAS - SUPER ADMIN + ADMIN CLIENTE
-# VERSIÓN CORREGIDA - CREA PERSONAL AUTOMÁTICAMENTE
+# VERSIÓN COMPLETA CORREGIDA - CREA PERSONAL + USUARIO AUTOMÁTICAMENTE
+# Jerarquía: super_admin → admin_cliente → admin_empresa → jefe → usuario
 
 from fastapi import APIRouter, Depends, HTTPException, status, Body, Query
 from sqlalchemy.orm import Session
@@ -8,6 +9,7 @@ from typing import List, Optional
 from uuid import UUID
 from datetime import datetime, timedelta, timezone, date
 import re
+import random
 
 from app.database import get_db
 from app.core.dependencies import get_current_super_admin, get_current_active_user
@@ -29,8 +31,17 @@ def ahora_utc():
 def generar_subdominio(nombre: str) -> str:
     """Genera un subdominio limpio a partir del nombre de la empresa"""
     sub = nombre.lower().strip()
-    sub = sub.replace('á', 'a').replace('é', 'e').replace('í', 'i').replace('ó', 'o').replace('ú', 'u')
-    sub = sub.replace('ñ', 'n')
+    # Reemplazar caracteres especiales
+    reemplazos = {
+        'á': 'a', 'é': 'e', 'í': 'i', 'ó': 'o', 'ú': 'u',
+        'à': 'a', 'è': 'e', 'ì': 'i', 'ò': 'o', 'ù': 'u',
+        'ä': 'a', 'ë': 'e', 'ï': 'i', 'ö': 'o', 'ü': 'u',
+        'â': 'a', 'ê': 'e', 'î': 'i', 'ô': 'o', 'û': 'u',
+        'ã': 'a', 'õ': 'o', 'ñ': 'n', 'ç': 'c'
+    }
+    for char, reemplazo in reemplazos.items():
+        sub = sub.replace(char, reemplazo)
+    
     sub = re.sub(r'[^a-z0-9\s-]', '', sub)
     sub = re.sub(r'[\s_]+', '-', sub)
     sub = re.sub(r'-+', '-', sub)
@@ -77,7 +88,8 @@ async def listar_empresas(
     result = []
     for empresa in empresas:
         total_auth = db.query(Usuario).filter(
-            Usuario.empresa_id == empresa.id, Usuario.activo == True
+            Usuario.empresa_id == empresa.id, 
+            Usuario.activo == True
         ).count()
         
         total_personal = db.query(Personal).filter(
@@ -85,7 +97,8 @@ async def listar_empresas(
         ).count()
         
         personal_activo = db.query(Personal).filter(
-            Personal.empresa_id == empresa.id, Personal.activo == True
+            Personal.empresa_id == empresa.id, 
+            Personal.activo == True
         ).count()
         
         completitud = round((total_auth / personal_activo * 100), 1) if personal_activo > 0 else 0
@@ -101,6 +114,8 @@ async def listar_empresas(
             fecha_venc = empresa.fecha_vencimiento
             if isinstance(fecha_venc, date):
                 fecha_venc = datetime.combine(fecha_venc, datetime.min.time()).replace(tzinfo=timezone.utc)
+            elif isinstance(fecha_venc, datetime) and fecha_venc.tzinfo is None:
+                fecha_venc = fecha_venc.replace(tzinfo=timezone.utc)
             vencida = fecha_venc < ahora
             if not vencida:
                 dias_restantes = (fecha_venc - ahora).days
@@ -145,28 +160,88 @@ async def listar_empresas(
 async def crear_empresa(
     data: EmpresaCreate,
     db: Session = Depends(get_db),
-    current_user: Usuario = Depends(get_current_super_admin)
+    current_user: Usuario = Depends(get_current_active_user)  # ✅ Permite super_admin y admin_cliente
 ):
     """
-    Crea una nueva empresa con su administrador (solo super_admin).
+    Crea una nueva empresa con su administrador.
+    
+    PERMISOS:
+    - super_admin: puede crear empresas en cualquier cliente
+    - admin_cliente: solo puede crear empresas en su propio cliente
+    
     FLUJO COMPLETO:
-    1. Crea la empresa
-    2. Crea el registro personal del admin
-    3. Crea el usuario auth vinculado al personal
+    1. Valida permisos y cliente
+    2. Crea la empresa vinculada al cliente
+    3. Crea el registro personal del admin_empresa
+    4. Crea el usuario admin_empresa vinculado al personal y cliente
+    5. Vincula el admin a la empresa
     """
+    
+    # =====================================================
+    # 🔐 VALIDACIONES DE PERMISOS Y CLIENTE
+    # =====================================================
+    
+    # Validar que el cliente existe y está activo
+    if data.cliente_id:
+        cliente = db.query(Cliente).filter(
+            Cliente.id == data.cliente_id,
+            Cliente.activo == True
+        ).first()
+        if not cliente:
+            raise HTTPException(
+                status_code=400, 
+                detail="El cliente seleccionado no existe o está inactivo"
+            )
+        
+        # Verificar permisos: admin_cliente solo puede crear en su cliente
+        if is_admin_cliente(current_user.rol_global):
+            if str(current_user.cliente_id) != str(data.cliente_id):
+                raise HTTPException(
+                    status_code=403, 
+                    detail="Solo puedes crear empresas en tu propio cliente"
+                )
+    else:
+        # Si no se proporciona cliente_id, solo super_admin puede crear sin cliente
+        if not is_super_admin(current_user.rol_global):
+            raise HTTPException(
+                status_code=400, 
+                detail="Debes seleccionar un cliente para crear la empresa"
+            )
+    
+    # =====================================================
+    # 🔤 GENERAR VALORES AUTOMÁTICOS
+    # =====================================================
     subdominio = data.subdominio or generar_subdominio(data.nombre)
     dominio_email = data.dominio_email or f"{subdominio}.com"
     email_contacto = data.email_contacto or f"admin@{dominio_email}"
     admin_email = data.admin_email or f"admin@{dominio_email}"
     
-    # Validaciones
+    # =====================================================
+    # ✅ VALIDACIONES DE UNICIDAD
+    # =====================================================
     if db.query(Empresa).filter(Empresa.subdominio == subdominio).first():
-        raise HTTPException(status_code=400, detail=f"El subdominio '{subdominio}' ya está registrado")
+        raise HTTPException(
+            status_code=400, 
+            detail=f"El subdominio '{subdominio}' ya está registrado"
+        )
     
     if db.query(Usuario).filter(Usuario.email == admin_email).first():
-        raise HTTPException(status_code=400, detail=f"El email '{admin_email}' ya está registrado")
+        raise HTTPException(
+            status_code=400, 
+            detail=f"El email '{admin_email}' ya está registrado como usuario"
+        )
     
-    fecha_prueba = (ahora_utc() + timedelta(days=30)).date()
+    # =====================================================
+    # 📅 FECHA DE VENCIMIENTO
+    # =====================================================
+    # Heredar fecha del cliente si tiene, sino 30 días de prueba
+    if data.cliente_id and cliente and cliente.fecha_vencimiento:
+        fecha_vencimiento = cliente.fecha_vencimiento
+        if isinstance(fecha_vencimiento, datetime):
+            fecha_vencimiento = fecha_vencimiento.date()
+    else:
+        fecha_vencimiento = (ahora_utc() + timedelta(days=30)).date()
+    
     ahora = ahora_utc()
     
     # =====================================================
@@ -184,17 +259,20 @@ async def crear_empresa(
         telefono=data.telefono,
         direccion=data.direccion,
         activo=True,
-        fecha_vencimiento=fecha_prueba,
-        cliente_id=data.cliente_id,
+        fecha_vencimiento=fecha_vencimiento,
+        cliente_id=data.cliente_id,  # ✅ Vinculado al cliente
     )
     db.add(empresa)
-    db.flush()
+    db.flush()  # Obtener ID sin hacer commit
     
+        # =====================================================
+    # 2. CREAR REGISTRO PERSONAL DEL ADMIN_EMPRESA
     # =====================================================
-    # 2. 🆕 CREAR REGISTRO PERSONAL DEL ADMIN
-    # =====================================================
+    import random
+    dni_admin = f"{random.randint(10000000, 99999999)}"
+    
     admin_personal = Personal(
-        dni=f"ADM{empresa.id.hex[:6].upper()}",
+        dni=dni_admin,
         nombre=f"ADMINISTRADOR {data.nombre.upper()}",
         email=admin_email,
         area="ADMINISTRACION",
@@ -205,23 +283,29 @@ async def crear_empresa(
         empresa_id=empresa.id,
         sexo="No especificado",
         areas_que_jefatura=[],
-        areas_jefatura={"area": [], "grupo": [], "departamento": [], "direccion": []},
+        areas_jefatura={
+            "area": [], 
+            "grupo": [], 
+            "departamento": [], 
+            "direccion": []
+        },
         fecha_ingreso=ahora.date()
     )
     db.add(admin_personal)
     db.flush()
     
     # =====================================================
-    # 3. 🆕 CREAR USUARIO AUTH VINCULADO AL PERSONAL
+    # 3. CREAR USUARIO ADMIN_EMPRESA VINCULADO AL PERSONAL
     # =====================================================
     admin_usuario = Usuario(
         email=admin_email,
         username=admin_email,
         password_hash=get_password_hash(data.admin_password),
-        empresa_id=empresa.id,
-        personal_id=admin_personal.id,  # 🆕 Vinculado al registro personal
         rol_global="admin_empresa",
         roles=["admin_empresa", "usuario"],
+        empresa_id=empresa.id,          # ✅ Pertenece a esta empresa
+        cliente_id=empresa.cliente_id,  # ✅ Hereda el cliente de la empresa
+        personal_id=admin_personal.id,  # ✅ Vinculado a su registro personal
         activo=True
     )
     db.add(admin_usuario)
@@ -231,8 +315,14 @@ async def crear_empresa(
     # 4. VINCULAR ADMIN A LA EMPRESA
     # =====================================================
     empresa.admin_id = admin_usuario.id
+    
+    # =====================================================
+    # 5. CONFIRMAR TRANSACCIÓN
+    # =====================================================
     db.commit()
     db.refresh(empresa)
+    db.refresh(admin_usuario)
+    db.refresh(admin_personal)
     
     return {
         "message": "Empresa creada exitosamente",
@@ -242,7 +332,10 @@ async def crear_empresa(
         "dominio_email": empresa.dominio_email,
         "email_contacto": empresa.email_contacto,
         "admin_email": admin_email,
+        "admin_id": str(admin_usuario.id),
         "admin_personal_id": str(admin_personal.id),
+        "cliente_id": str(empresa.cliente_id) if empresa.cliente_id else None,
+        "cliente_nombre": cliente.nombre if data.cliente_id and cliente else None,
         "plan": empresa.plan,
         "fecha_vencimiento": empresa.fecha_vencimiento.isoformat() if empresa.fecha_vencimiento else None,
         "dias_prueba": 30
@@ -257,6 +350,7 @@ async def estadisticas_globales(
     """Estadísticas globales para el dashboard del super_admin"""
     ahora = ahora_utc()
     en_7_dias = ahora + timedelta(days=7)
+    en_30_dias = ahora + timedelta(days=30)
     
     total_empresas = db.query(Empresa).count()
     empresas_activas = db.query(Empresa).filter(Empresa.activo == True).count()
@@ -266,6 +360,17 @@ async def estadisticas_globales(
         Empresa.activo == True,
         Empresa.fecha_vencimiento >= ahora.date(),
         Empresa.fecha_vencimiento <= en_7_dias.date()
+    ).count()
+    
+    por_vencer_30 = db.query(Empresa).filter(
+        Empresa.activo == True,
+        Empresa.fecha_vencimiento >= ahora.date(),
+        Empresa.fecha_vencimiento <= en_30_dias.date()
+    ).count()
+    
+    vencidas = db.query(Empresa).filter(
+        Empresa.activo == True,
+        Empresa.fecha_vencimiento < ahora.date()
     ).count()
     
     total_usuarios = db.query(Usuario).filter(Usuario.activo == True).count()
@@ -284,8 +389,9 @@ async def estadisticas_globales(
         "total_empresas": total_empresas,
         "empresas_activas": empresas_activas,
         "empresas_suspendidas": total_empresas - empresas_activas,
-        "empresas_vencidas": 0,
+        "empresas_vencidas": vencidas,
         "empresas_por_vencer_7d": por_vencer_7,
+        "empresas_por_vencer_30d": por_vencer_30,
         "nuevas_este_mes": nuevas_este_mes,
         "total_usuarios": total_usuarios,
         "total_personal": total_personal,
@@ -357,21 +463,37 @@ async def obtener_empresa(
     # Verificar acceso
     if not is_super_admin(current_user.rol_global):
         if is_admin_cliente(current_user.rol_global):
-            if empresa.cliente_id != current_user.cliente_id:
+            if str(empresa.cliente_id) != str(current_user.cliente_id):
                 raise HTTPException(status_code=403, detail="No tienes acceso a esta empresa")
-        elif empresa.id != current_user.empresa_id:
+        elif str(empresa.id) != str(current_user.empresa_id):
             raise HTTPException(status_code=403, detail="No tienes acceso a esta empresa")
     
     ahora = ahora_utc()
     
-    total_auth = db.query(Usuario).filter(Usuario.empresa_id == empresa.id, Usuario.activo == True).count()
-    total_personal = db.query(Personal).filter(Personal.empresa_id == empresa.id).count()
-    personal_activo = db.query(Personal).filter(Personal.empresa_id == empresa.id, Personal.activo == True).count()
-    areas = db.query(Personal.area).filter(Personal.empresa_id == empresa.id, Personal.activo == True).distinct().count()
+    total_auth = db.query(Usuario).filter(
+        Usuario.empresa_id == empresa.id, 
+        Usuario.activo == True
+    ).count()
+    
+    total_personal = db.query(Personal).filter(
+        Personal.empresa_id == empresa.id
+    ).count()
+    
+    personal_activo = db.query(Personal).filter(
+        Personal.empresa_id == empresa.id, 
+        Personal.activo == True
+    ).count()
+    
+    areas = db.query(Personal.area).filter(
+        Personal.empresa_id == empresa.id, 
+        Personal.activo == True
+    ).distinct().count()
+    
     completitud = round((total_auth / personal_activo * 100), 1) if personal_activo > 0 else 0
     
     ultimo = db.query(Usuario).filter(
-        Usuario.empresa_id == empresa.id, Usuario.ultimo_acceso.isnot(None)
+        Usuario.empresa_id == empresa.id, 
+        Usuario.ultimo_acceso.isnot(None)
     ).order_by(Usuario.ultimo_acceso.desc()).first()
     
     admin = db.query(Usuario).filter(Usuario.id == empresa.admin_id).first()
@@ -431,9 +553,19 @@ async def actualizar_empresa(
     if not empresa:
         raise HTTPException(status_code=404, detail="Empresa no encontrada")
     
-    # Solo super_admin y admin_cliente pueden actualizar
+    # Solo super_admin, admin_cliente y admin_empresa pueden actualizar
     if not is_admin(current_user.rol_global):
         raise HTTPException(status_code=403, detail="No tienes permisos para actualizar empresas")
+    
+    # Admin cliente solo puede actualizar empresas de su cliente
+    if is_admin_cliente(current_user.rol_global):
+        if str(empresa.cliente_id) != str(current_user.cliente_id):
+            raise HTTPException(status_code=403, detail="No tienes acceso a esta empresa")
+    
+    # Admin empresa solo puede actualizar su propia empresa
+    if current_user.rol_global == "admin_empresa":
+        if str(empresa.id) != str(current_user.empresa_id):
+            raise HTTPException(status_code=403, detail="Solo puedes actualizar tu propia empresa")
     
     update_data = data.model_dump(exclude_unset=True)
     for field, value in update_data.items():
@@ -458,21 +590,46 @@ async def actualizar_empresa(
 async def toggle_estado_empresa(
     empresa_id: UUID,
     db: Session = Depends(get_db),
-    current_user: Usuario = Depends(get_current_super_admin)
+    current_user: Usuario = Depends(get_current_active_user)  # ✅ Permite super_admin y admin_cliente
 ):
-    """Activa o desactiva una empresa (solo super_admin)"""
+    """Activa o desactiva una empresa y sus usuarios"""
     empresa = db.query(Empresa).filter(Empresa.id == empresa_id).first()
     if not empresa:
         raise HTTPException(status_code=404, detail="Empresa no encontrada")
     
+    # Verificar permisos
+    if not is_super_admin(current_user.rol_global):
+        if is_admin_cliente(current_user.rol_global):
+            if str(empresa.cliente_id) != str(current_user.cliente_id):
+                raise HTTPException(status_code=403, detail="No tienes acceso a esta empresa")
+        else:
+            raise HTTPException(status_code=403, detail="No tienes permisos para esta acción")
+    
     empresa.activo = not empresa.activo
     empresa.updated_at = ahora_utc()
+    
+    # También activar/desactivar usuarios de la empresa (excepto admins)
+    if not empresa.activo:
+        db.query(Usuario).filter(
+            Usuario.empresa_id == empresa_id,
+            Usuario.rol_global.notin_(["super_admin", "admin_cliente"])
+        ).update({"activo": False, "updated_at": ahora_utc()})
+    else:
+        db.query(Usuario).filter(
+            Usuario.empresa_id == empresa_id,
+            Usuario.rol_global.notin_(["super_admin", "admin_cliente"])
+        ).update({"activo": True, "updated_at": ahora_utc()})
+    
     db.commit()
     
     return {
         "message": f"Empresa {'activada' if empresa.activo else 'desactivada'} exitosamente",
         "id": str(empresa.id),
-        "activo": empresa.activo
+        "activo": empresa.activo,
+        "usuarios_afectados": db.query(Usuario).filter(
+            Usuario.empresa_id == empresa_id,
+            Usuario.rol_global.notin_(["super_admin", "admin_cliente"])
+        ).count()
     }
 
 
@@ -481,19 +638,32 @@ async def renovar_empresa(
     empresa_id: UUID,
     dias: int = Body(30, ge=1, le=365),
     db: Session = Depends(get_db),
-    current_user: Usuario = Depends(get_current_super_admin)
+    current_user: Usuario = Depends(get_current_active_user)  # ✅ Permite super_admin y admin_cliente
 ):
-    """Extiende la suscripción de una empresa por N días (solo super_admin)"""
+    """Extiende la suscripción de una empresa por N días"""
     empresa = db.query(Empresa).filter(Empresa.id == empresa_id).first()
     if not empresa:
         raise HTTPException(status_code=404, detail="Empresa no encontrada")
     
+    # Verificar permisos
+    if not is_super_admin(current_user.rol_global):
+        if is_admin_cliente(current_user.rol_global):
+            if str(empresa.cliente_id) != str(current_user.cliente_id):
+                raise HTTPException(status_code=403, detail="No tienes acceso a esta empresa")
+        else:
+            raise HTTPException(status_code=403, detail="No tienes permisos para esta acción")
+    
     ahora = ahora_utc().date()
     
-    if empresa.fecha_vencimiento and empresa.fecha_vencimiento < ahora:
-        empresa.fecha_vencimiento = ahora + timedelta(days=dias)
-    elif empresa.fecha_vencimiento:
-        empresa.fecha_vencimiento = empresa.fecha_vencimiento + timedelta(days=dias)
+    if empresa.fecha_vencimiento:
+        fecha_venc = empresa.fecha_vencimiento
+        if isinstance(fecha_venc, datetime):
+            fecha_venc = fecha_venc.date()
+        
+        if fecha_venc < ahora:
+            empresa.fecha_vencimiento = ahora + timedelta(days=dias)
+        else:
+            empresa.fecha_vencimiento = fecha_venc + timedelta(days=dias)
     else:
         empresa.fecha_vencimiento = ahora + timedelta(days=dias)
     

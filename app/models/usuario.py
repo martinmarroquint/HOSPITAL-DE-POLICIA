@@ -10,6 +10,7 @@ class Usuario(Base):
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     personal_id = Column(UUID(as_uuid=True), ForeignKey("personal.id"), nullable=True)
     empresa_id = Column(UUID(as_uuid=True), ForeignKey("empresas.id"), nullable=True)
+    cliente_id = Column(UUID(as_uuid=True), ForeignKey("clientes.id"), nullable=True)  # ✅ AGREGAR ESTA LÍNEA
     email = Column(String, unique=True, nullable=False, index=True)
     username = Column(String, unique=True, nullable=True)
     password_hash = Column(String, nullable=False)
