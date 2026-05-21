@@ -1,5 +1,5 @@
 # app/models/__init__.py
-# VERSIÓN ACTUALIZADA - CON JUSTIFICACIONES DE ASISTENCIA PARA VISITANTES
+# VERSION ACTUALIZADA - CON METAS DE CUMPLIMIENTO + ROTACIONES
 
 from app.models.usuario import Usuario
 from app.models.personal import Personal
@@ -18,8 +18,10 @@ from app.models.qr import QRRegistro
 from app.models.configuracion_mensual import ConfiguracionMensual
 from app.models.publicacion import Publicacion, PublicacionVista
 from app.models.notificacion import Notificacion
+from app.models.meta_cumplimiento import MetaCumplimiento
+from app.models.rotacion import Rotacion
 
-# Configuración dinámica
+# Configuracion dinamica
 from app.models.configuracion import (
     ConfigTurno,
     ConfigRegla,
@@ -39,7 +41,7 @@ from app.models.configuracion import (
 )
 
 __all__ = [
-    # MULTI-TENANCY Y JERARQUÍA
+    # MULTI-TENANCY Y JERARQUIA
     "Empresa",
     "Cliente",
     
@@ -47,10 +49,16 @@ __all__ = [
     "Usuario",
     "Personal",
     
-    # PLANIFICACIÓN
+    # PLANIFICACION
     "Planificacion",
     "PlanificacionBorrador",
     "ConfiguracionMensual",
+    
+    # METAS DE CUMPLIMIENTO
+    "MetaCumplimiento",
+    
+    # ROTACIONES
+    "Rotacion",
     
     # ASISTENCIA Y JUSTIFICACIONES
     "Asistencia",
@@ -70,7 +78,7 @@ __all__ = [
     "Trazabilidad",
     "AccionTrazabilidad",
     
-    # JERARQUÍA
+    # JERARQUIA
     "Jerarquia",
     "NivelJerarquico",
     "TipoArea",
@@ -80,7 +88,7 @@ __all__ = [
     "PublicacionVista",
     "Notificacion",
     
-    # CONFIGURACIÓN DINÁMICA
+    # CONFIGURACION DINAMICA
     "ConfigTurno",
     "ConfigRegla",
     "ConfigNivelJerarquico",

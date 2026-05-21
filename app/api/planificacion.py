@@ -1,5 +1,5 @@
 # api/planificacion.py
-# VERSIÓN COMPLETA - ROLES ACTUALIZADOS + mi-horario sin 404 + EXCEPCIONES
+# VERSION COMPLETA - ROLES ACTUALIZADOS + mi-horario sin 404 + EXCEPCIONES + METAS DE CUMPLIMIENTO
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from sqlalchemy.orm import Session, joinedload
@@ -16,6 +16,7 @@ from app.models.planificacion import Planificacion
 from app.models.personal import Personal
 from app.models.usuario import Usuario
 from app.models.solicitud_cambio import SolicitudCambio
+from app.models.meta_cumplimiento import MetaCumplimiento
 from app.schemas.planificacion import (
     PlanificacionCreate, PlanificacionResponse, PlanificacionMasiva,
     ObservacionCreate, EstadoPlanificacion
@@ -25,7 +26,7 @@ router = APIRouter()
 logger = logging.getLogger(__name__)
 
 # =====================================================
-# FUNCIÓN AUXILIAR: FILTRO MULTI-EMPRESA
+# FUNCION AUXILIAR: FILTRO MULTI-EMPRESA
 # =====================================================
 
 def aplicar_filtro_empresa(query, current_user, modelo):
@@ -50,7 +51,7 @@ def parse_hora(hora_str: Optional[str]) -> Optional[time]:
 
 
 # =====================================================
-# CACHE EN MEMORIA CON EXPIRACIÓN (5 minutos)
+# CACHE EN MEMORIA CON EXPIRACION (5 minutos)
 # =====================================================
 
 class PlanificacionCache:
@@ -101,7 +102,7 @@ async def health_check():
     return {"status": "healthy", "service": "planificacion", "timestamp": datetime.utcnow().isoformat()}
 
 
-# 🆕 ENDPOINT DE EXCEPCIONES
+# ENDPOINT DE EXCEPCIONES
 @router.get("/excepciones")
 async def obtener_excepciones(
     fecha: date = Query(...),
@@ -109,9 +110,9 @@ async def obtener_excepciones(
     current_user: Usuario = Depends(get_current_user)
 ):
     """
-    Obtiene las excepciones de planificación para una fecha específica.
+    Obtiene las excepciones de planificacion para una fecha especifica.
     Busca: solicitudes de cambio aprobadas (vacaciones, suspensiones, feriados)
-    y descansos médicos activos para esa fecha.
+    y descansos medicos activos para esa fecha.
     """
     try:
         excepciones = []
@@ -135,7 +136,7 @@ async def obtener_excepciones(
                 "turno_solicitado": sol.turno_solicitado if hasattr(sol, 'turno_solicitado') else None,
             })
         
-        # 2. Buscar descansos médicos activos para esa fecha
+        # 2. Buscar descansos medicos activos para esa fecha
         from app.models.descanso_medico import DescansoMedico
         
         dms = db.query(DescansoMedico).filter(
@@ -151,7 +152,7 @@ async def obtener_excepciones(
                 "personal_id": str(dm.paciente_id),
                 "personal_nombre": personal.nombre if personal else "Desconocido",
                 "tipo": "DM",
-                "motivo": dm.diagnostico or "Descanso médico",
+                "motivo": dm.diagnostico or "Descanso medico",
                 "fecha": fecha.isoformat(),
                 "fecha_inicio": dm.fecha_inicio.isoformat(),
                 "fecha_fin": dm.fecha_fin.isoformat(),
@@ -237,12 +238,12 @@ async def obtener_planificacion_personal(
         
         if (es_usuario or es_visitante) and not es_admin and not es_jefe:
             if str(current_user.personal_id) != str(personal_id):
-                raise HTTPException(status_code=403, detail="No puede ver planificación de otro personal")
+                raise HTTPException(status_code=403, detail="No puede ver planificacion de otro personal")
         
         if es_jefe and not es_admin:
             jefe = get_jefe_area(db, current_user.personal_id)
             if not personal or not jefe or personal.area != jefe.area:
-                raise HTTPException(status_code=403, detail="No puede ver personal de otra área")
+                raise HTTPException(status_code=403, detail="No puede ver personal de otra area")
         
         query = db.query(
             Planificacion.fecha, Planificacion.turno_codigo,
@@ -302,7 +303,7 @@ async def obtener_planificacion_publica_personal(
 @router.get("/mi-horario/{anio}/{mes}")
 async def get_mi_horario(anio: int, mes: int, db: Session = Depends(get_db), current_user: Usuario = Depends(get_current_user)):
     try:
-        if mes < 1 or mes > 12: raise HTTPException(status_code=400, detail="Mes inválido")
+        if mes < 1 or mes > 12: raise HTTPException(status_code=400, detail="Mes invalido")
         personal_id = current_user.personal_id
         if not personal_id:
             return []
@@ -432,7 +433,7 @@ async def obtener_planificacion_mensual(
     db: Session = Depends(get_db),
     current_user: Usuario = Depends(require_roles(["admin_empresa", "jefe"]))
 ):
-    if mes < 1 or mes > 12: raise HTTPException(status_code=400, detail="Mes inválido")
+    if mes < 1 or mes > 12: raise HTTPException(status_code=400, detail="Mes invalido")
     try:
         area_value = area if area else "todas"
         cache_key = f"{anio}-{mes:02d}-{area_value}-{str(current_user.id)}"
@@ -639,7 +640,7 @@ async def crear_planificacion_masiva(
         
         db.commit()
         for anio, mes in meses_afectados: planificacion_cache.invalidate_for_mes(anio, mes)
-        return {"message": "Planificación guardada exitosamente", "creados": creados, "actualizados": actualizados, "errores": errores if errores else None}
+        return {"message": "Planificacion guardada exitosamente", "creados": creados, "actualizados": actualizados, "errores": errores if errores else None}
     except Exception as e:
         logger.error(f"Error en crear_planificacion_masiva: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error interno del servidor: {str(e)}")
@@ -659,7 +660,7 @@ async def agregar_observacion(
         planificacion.updated_at = datetime.utcnow()
         db.commit()
         planificacion_cache.invalidate_for_mes(obs_data.fecha.year, obs_data.fecha.month)
-        return {"message": "Observación agregada exitosamente"}
+        return {"message": "Observacion agregada exitosamente"}
     except HTTPException: raise
     except Exception as e:
         logger.error(f"Error en agregar_observacion: {str(e)}")
@@ -673,7 +674,7 @@ async def eliminar_observacion(
 ):
     try:
         parts = key.split('_')
-        if len(parts) != 2: raise ValueError("Formato inválido")
+        if len(parts) != 2: raise ValueError("Formato invalido")
         personal_id = UUID(parts[0]); fecha = date.fromisoformat(parts[1])
         planificacion = db.query(Planificacion).filter(
             Planificacion.personal_id == personal_id, Planificacion.fecha == fecha
@@ -682,7 +683,7 @@ async def eliminar_observacion(
         planificacion.observacion = None; planificacion.updated_at = datetime.utcnow()
         db.commit()
         planificacion_cache.invalidate_for_mes(fecha.year, fecha.month)
-        return {"message": "Observación eliminada exitosamente"}
+        return {"message": "Observacion eliminada exitosamente"}
     except HTTPException: raise
     except Exception as e:
         logger.error(f"Error en eliminar_observacion: {str(e)}")
@@ -697,8 +698,8 @@ async def guardar_borrador_area(
 ):
     try:
         jefe = db.query(Personal.id, Personal.area).filter(Personal.id == current_user.personal_id).first()
-        if not jefe or jefe.area != area: raise HTTPException(status_code=403, detail="No eres jefe de esta área")
-        if mes < 1 or mes > 12: raise HTTPException(status_code=400, detail="Mes inválido")
+        if not jefe or jefe.area != area: raise HTTPException(status_code=403, detail="No eres jefe de esta area")
+        if mes < 1 or mes > 12: raise HTTPException(status_code=400, detail="Mes invalido")
         fecha_referencia = date(anio, mes, 1)
         solicitud_existente = db.query(SolicitudCambio).filter(
             SolicitudCambio.tipo == "planificacion_mensual", SolicitudCambio.empleado_id == current_user.personal_id,
@@ -710,11 +711,11 @@ async def guardar_borrador_area(
             solicitud_existente.turno_original = datos_array; solicitud_existente.estado = "borrador"
             if hasattr(solicitud_existente, 'updated_at'): solicitud_existente.updated_at = datetime.utcnow()
             if not solicitud_existente.historial: solicitud_existente.historial = []
-            solicitud_existente.historial.append({"fecha": datetime.utcnow().isoformat(), "usuario": str(current_user.id), "accion": "actualización_borrador", "estado": "borrador", "registros": len(datos_array)})
+            solicitud_existente.historial.append({"fecha": datetime.utcnow().isoformat(), "usuario": str(current_user.id), "accion": "actualizacion_borrador", "estado": "borrador", "registros": len(datos_array)})
             db.commit()
             return {"message": "Borrador actualizado exitosamente", "id": str(solicitud_existente.id), "estado": solicitud_existente.estado, "registros": len(datos_array)}
         else:
-            nueva_solicitud = SolicitudCambio(tipo="planificacion_mensual", estado="borrador", fecha_cambio=fecha_referencia, motivo="ENVIO_MENSUAL", empleado_id=current_user.personal_id, turno_original=datos_array, historial=[{"fecha": datetime.utcnow().isoformat(), "usuario": str(current_user.id), "accion": "creación_borrador", "estado": "borrador", "registros": len(datos_array)}], created_by=current_user.id)
+            nueva_solicitud = SolicitudCambio(tipo="planificacion_mensual", estado="borrador", fecha_cambio=fecha_referencia, motivo="ENVIO_MENSUAL", empleado_id=current_user.personal_id, turno_original=datos_array, historial=[{"fecha": datetime.utcnow().isoformat(), "usuario": str(current_user.id), "accion": "creacion_borrador", "estado": "borrador", "registros": len(datos_array)}], created_by=current_user.id)
             db.add(nueva_solicitud); db.commit(); db.refresh(nueva_solicitud)
             return {"message": "Borrador creado exitosamente", "id": str(nueva_solicitud.id), "estado": nueva_solicitud.estado, "registros": len(datos_array)}
     except HTTPException: raise
@@ -731,7 +732,7 @@ async def enviar_planificacion_revision(
 ):
     try:
         jefe = db.query(Personal).filter(Personal.id == current_user.personal_id).first()
-        if not jefe or jefe.area != area: raise HTTPException(status_code=403, detail="No eres jefe de esta área")
+        if not jefe or jefe.area != area: raise HTTPException(status_code=403, detail="No eres jefe de esta area")
         fecha_referencia = date(anio, mes, 1)
         solicitud = db.query(SolicitudCambio).filter(
             SolicitudCambio.tipo == "planificacion_mensual", SolicitudCambio.empleado_id == current_user.personal_id,
@@ -740,9 +741,9 @@ async def enviar_planificacion_revision(
         if not solicitud: raise HTTPException(status_code=404, detail="No hay borrador para enviar")
         solicitud.estado = "pendiente"
         if not solicitud.historial: solicitud.historial = []
-        solicitud.historial.append({"fecha": datetime.utcnow().isoformat(), "usuario": str(current_user.id), "accion": "envío_a_revisión", "estado": "pendiente"})
+        solicitud.historial.append({"fecha": datetime.utcnow().isoformat(), "usuario": str(current_user.id), "accion": "envio_a_revision", "estado": "pendiente"})
         db.commit()
-        return {"message": "Planificación enviada a revisión exitosamente", "id": str(solicitud.id), "estado": solicitud.estado}
+        return {"message": "Planificacion enviada a revision exitosamente", "id": str(solicitud.id), "estado": solicitud.estado}
     except HTTPException: raise
     except Exception as e:
         logger.error(f"Error en enviar_planificacion_revision: {str(e)}")
@@ -756,7 +757,7 @@ async def eliminar_planificacion(
 ):
     try:
         planificacion = db.query(Planificacion).filter(Planificacion.id == planificacion_id).first()
-        if not planificacion: raise HTTPException(status_code=404, detail="Planificación no encontrada")
+        if not planificacion: raise HTTPException(status_code=404, detail="Planificacion no encontrada")
         fecha = planificacion.fecha
         db.delete(planificacion); db.commit()
         planificacion_cache.invalidate_for_mes(fecha.year, fecha.month)
@@ -785,3 +786,377 @@ async def eliminar_planificacion_mensual(
     except Exception as e:
         logger.error(f"Error en eliminar_planificacion_mensual: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error interno del servidor: {str(e)}")
+
+# =====================================================
+# ROTACIONES
+# =====================================================
+
+@router.get("/rotaciones")
+async def obtener_rotaciones(
+    db: Session = Depends(get_db),
+    current_user: Usuario = Depends(require_roles(["admin_empresa", "jefe"]))
+):
+    """
+    Obtiene todas las rotaciones de la empresa del usuario.
+    """
+    try:
+        from app.models.rotacion import Rotacion
+        
+        query = db.query(Rotacion).filter(Rotacion.activo == True)
+        
+        if current_user.empresa_id and current_user.rol_global != "super_admin":
+            query = query.filter(
+                (Rotacion.empresa_id == current_user.empresa_id) | 
+                (Rotacion.empresa_id.is_(None))
+            )
+        
+        rotaciones = query.order_by(Rotacion.nombre).all()
+        
+        return {
+            "rotaciones": [
+                {
+                    "id": str(r.id),
+                    "nombre": r.nombre,
+                    "descripcion": r.descripcion,
+                    "patron": r.patron,
+                    "duracion_ciclo": r.duracion_ciclo,
+                    "color": r.color,
+                    "activo": r.activo,
+                    "created_at": r.created_at.isoformat() if r.created_at else None
+                }
+                for r in rotaciones
+            ]
+        }
+    except Exception as e:
+        logger.error(f"Error en obtener_rotaciones: {str(e)}")
+        return {"rotaciones": []}
+
+
+@router.post("/rotaciones")
+async def crear_rotacion(
+    data: Dict[str, Any],
+    db: Session = Depends(get_db),
+    current_user: Usuario = Depends(require_roles(["admin_empresa", "jefe"]))
+):
+    """
+    Crea una nueva rotacion.
+    """
+    try:
+        from app.models.rotacion import Rotacion
+        
+        rotacion = Rotacion(
+            empresa_id=current_user.empresa_id,
+            nombre=data["nombre"],
+            descripcion=data.get("descripcion"),
+            patron=data.get("patron", []),
+            duracion_ciclo=data.get("duracion_ciclo", len(data.get("patron", []))),
+            color=data.get("color", "#6366F1")
+        )
+        
+        db.add(rotacion)
+        db.commit()
+        db.refresh(rotacion)
+        
+        return {
+            "id": str(rotacion.id),
+            "nombre": rotacion.nombre,
+            "descripcion": rotacion.descripcion,
+            "patron": rotacion.patron,
+            "duracion_ciclo": rotacion.duracion_ciclo,
+            "color": rotacion.color,
+            "activo": rotacion.activo,
+            "created_at": rotacion.created_at.isoformat() if rotacion.created_at else None
+        }
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Error en crear_rotacion: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error al crear rotacion: {str(e)}")
+
+
+@router.put("/rotaciones/{rotacion_id}")
+async def actualizar_rotacion(
+    rotacion_id: UUID,
+    data: Dict[str, Any],
+    db: Session = Depends(get_db),
+    current_user: Usuario = Depends(require_roles(["admin_empresa", "jefe"]))
+):
+    """
+    Actualiza una rotacion existente.
+    """
+    try:
+        from app.models.rotacion import Rotacion
+        
+        rotacion = db.query(Rotacion).filter(Rotacion.id == rotacion_id).first()
+        if not rotacion:
+            raise HTTPException(status_code=404, detail="Rotacion no encontrada")
+        
+        if current_user.empresa_id and rotacion.empresa_id and rotacion.empresa_id != current_user.empresa_id:
+            raise HTTPException(status_code=403, detail="No tiene acceso a esta rotacion")
+        
+        if "nombre" in data:
+            rotacion.nombre = data["nombre"]
+        if "descripcion" in data:
+            rotacion.descripcion = data["descripcion"]
+        if "patron" in data:
+            rotacion.patron = data["patron"]
+            rotacion.duracion_ciclo = data.get("duracion_ciclo", len(data["patron"]))
+        if "color" in data:
+            rotacion.color = data["color"]
+        if "activo" in data:
+            rotacion.activo = data["activo"]
+        
+        db.commit()
+        db.refresh(rotacion)
+        
+        return {
+            "id": str(rotacion.id),
+            "nombre": rotacion.nombre,
+            "patron": rotacion.patron,
+            "duracion_ciclo": rotacion.duracion_ciclo,
+            "color": rotacion.color
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Error en actualizar_rotacion: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error al actualizar rotacion: {str(e)}")
+
+
+@router.delete("/rotaciones/{rotacion_id}")
+async def eliminar_rotacion(
+    rotacion_id: UUID,
+    db: Session = Depends(get_db),
+    current_user: Usuario = Depends(require_roles(["admin_empresa", "jefe"]))
+):
+    """
+    Elimina (desactiva) una rotacion.
+    """
+    try:
+        from app.models.rotacion import Rotacion
+        
+        rotacion = db.query(Rotacion).filter(Rotacion.id == rotacion_id).first()
+        if not rotacion:
+            raise HTTPException(status_code=404, detail="Rotacion no encontrada")
+        
+        if current_user.empresa_id and rotacion.empresa_id and rotacion.empresa_id != current_user.empresa_id:
+            raise HTTPException(status_code=403, detail="No tiene acceso a esta rotacion")
+        
+        rotacion.activo = False
+        db.commit()
+        
+        return {"message": "Rotacion eliminada correctamente"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Error en eliminar_rotacion: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error al eliminar rotacion: {str(e)}")
+
+
+@router.post("/rotaciones/aplicar")
+async def aplicar_rotacion(
+    data: Dict[str, Any],
+    db: Session = Depends(get_db),
+    current_user: Usuario = Depends(require_roles(["admin_empresa", "jefe"]))
+):
+    """
+    Aplica una rotacion a una lista de empleados desde una fecha de inicio.
+    """
+    try:
+        personas = data.get("personas", [])
+        patron = data.get("patron", [])
+        fecha_inicio_str = data.get("fecha_inicio")
+        mes = data.get("mes")
+        anio = data.get("anio")
+        
+        if not personas:
+            raise HTTPException(status_code=400, detail="Debe especificar al menos una persona")
+        if not patron:
+            raise HTTPException(status_code=400, detail="Debe especificar un patron")
+        if not fecha_inicio_str:
+            raise HTTPException(status_code=400, detail="Debe especificar una fecha de inicio")
+        
+        fecha_inicio = date.fromisoformat(fecha_inicio_str)
+        ciclo = len(patron)
+        
+        # Calcular ultimo dia del mes
+        if mes == 12:
+            ultimo_dia = 31
+        else:
+            ultimo_dia = date(anio, mes + 1, 1).replace(day=1) - timedelta(days=1)
+            ultimo_dia = ultimo_dia.day
+        
+        asignaciones_creadas = 0
+        asignaciones_actualizadas = 0
+        
+        for persona_id_str in personas:
+            persona_id = UUID(persona_id_str)
+            
+            for dia in range(fecha_inicio.day, ultimo_dia + 1):
+                fecha_actual = date(anio, mes, dia)
+                posicion_ciclo = ((dia - fecha_inicio.day) % ciclo)
+                turno_codigo = patron[posicion_ciclo].get("turno_codigo", "FRANCO")
+                
+                # Buscar si ya existe planificacion para esta fecha
+                existente = db.query(Planificacion).filter(
+                    Planificacion.personal_id == persona_id,
+                    Planificacion.fecha == fecha_actual
+                ).first()
+                
+                if existente:
+                    existente.turno_codigo = turno_codigo
+                    existente.updated_at = datetime.utcnow()
+                    existente.created_by = current_user.id
+                    asignaciones_actualizadas += 1
+                else:
+                    nuevo = Planificacion(
+                        personal_id=persona_id,
+                        fecha=fecha_actual,
+                        turno_codigo=turno_codigo,
+                        created_by=current_user.id
+                    )
+                    db.add(nuevo)
+                    asignaciones_creadas += 1
+        
+        db.commit()
+        planificacion_cache.invalidate_for_mes(anio, mes)
+        
+        return {
+            "message": "Rotacion aplicada correctamente",
+            "creados": asignaciones_creadas,
+            "actualizados": asignaciones_actualizadas,
+            "total": asignaciones_creadas + asignaciones_actualizadas
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Error en aplicar_rotacion: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error al aplicar rotacion: {str(e)}")
+
+# =====================================================
+# METAS DE CUMPLIMIENTO POR EMPLEADO
+# =====================================================
+
+@router.get("/metas/{anio}/{mes}")
+async def obtener_metas_mensuales(
+    anio: int,
+    mes: int,
+    db: Session = Depends(get_db),
+    current_user: Usuario = Depends(require_roles(["admin_empresa", "jefe"]))
+):
+    """
+    Obtiene las metas de cumplimiento definidas para cada empleado en un mes especifico.
+    """
+    try:
+        query = db.query(MetaCumplimiento).filter(
+            MetaCumplimiento.anio == anio,
+            MetaCumplimiento.mes == mes
+        )
+        
+        if current_user.empresa_id and current_user.rol_global != "super_admin":
+            query = query.join(Personal, Personal.id == MetaCumplimiento.personal_id)
+            query = query.filter(Personal.empresa_id == current_user.empresa_id)
+        
+        metas = query.all()
+        
+        return {
+            "metas": [
+                {
+                    "id": str(m.id),
+                    "personal_id": str(m.personal_id),
+                    "mes": m.mes,
+                    "anio": m.anio,
+                    "meta_turnos": m.meta_turnos,
+                    "ajustada_por": str(m.ajustada_por) if m.ajustada_por else None,
+                    "fecha_ajuste": m.fecha_ajuste.isoformat() if m.fecha_ajuste else None,
+                    "justificacion": m.justificacion
+                }
+                for m in metas
+            ]
+        }
+    except Exception as e:
+        logger.error(f"Error en obtener_metas_mensuales: {str(e)}")
+        return {"metas": []}
+
+
+@router.post("/metas")
+async def guardar_metas_mensuales(
+    data: Dict[str, Any],
+    db: Session = Depends(get_db),
+    current_user: Usuario = Depends(require_roles(["admin_empresa", "jefe"]))
+):
+    """
+    Guarda o actualiza las metas de cumplimiento para empleados en un mes especifico.
+    Recibe un objeto con la propiedad 'metas' que es un array de:
+    {
+        personal_id: UUID,
+        mes: int,
+        anio: int,
+        meta_turnos: int o null (null para eliminar la meta),
+        ajustada_por: UUID (opcional),
+        fecha_ajuste: string ISO (opcional),
+        justificacion: string (opcional)
+    }
+    """
+    try:
+        metas = data.get("metas", [])
+        if not metas:
+            raise HTTPException(status_code=400, detail="No se recibieron metas")
+        
+        creados = 0
+        actualizados = 0
+        eliminados = 0
+        
+        for meta_data in metas:
+            personal_id = UUID(meta_data["personal_id"])
+            mes = meta_data["mes"]
+            anio = meta_data["anio"]
+            meta_turnos = meta_data.get("meta_turnos")
+            
+            existente = db.query(MetaCumplimiento).filter(
+                MetaCumplimiento.personal_id == personal_id,
+                MetaCumplimiento.mes == mes,
+                MetaCumplimiento.anio == anio
+            ).first()
+            
+            if meta_turnos is None:
+                if existente:
+                    db.delete(existente)
+                    eliminados += 1
+            else:
+                if existente:
+                    existente.meta_turnos = meta_turnos
+                    existente.ajustada_por = UUID(meta_data["ajustada_por"]) if meta_data.get("ajustada_por") else current_user.id
+                    existente.fecha_ajuste = datetime.fromisoformat(meta_data["fecha_ajuste"]) if meta_data.get("fecha_ajuste") else datetime.utcnow()
+                    existente.justificacion = meta_data.get("justificacion")
+                    actualizados += 1
+                else:
+                    nueva_meta = MetaCumplimiento(
+                        personal_id=personal_id,
+                        mes=mes,
+                        anio=anio,
+                        meta_turnos=meta_turnos,
+                        ajustada_por=UUID(meta_data["ajustada_por"]) if meta_data.get("ajustada_por") else current_user.id,
+                        fecha_ajuste=datetime.fromisoformat(meta_data["fecha_ajuste"]) if meta_data.get("fecha_ajuste") else datetime.utcnow(),
+                        justificacion=meta_data.get("justificacion")
+                    )
+                    db.add(nueva_meta)
+                    creados += 1
+        
+        db.commit()
+        
+        return {
+            "message": "Metas guardadas exitosamente",
+            "creados": creados,
+            "actualizados": actualizados,
+            "eliminados": eliminados,
+            "total": creados + actualizados + eliminados
+        }
+        
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Error en guardar_metas_mensuales: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error al guardar metas: {str(e)}")
