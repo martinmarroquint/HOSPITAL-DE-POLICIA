@@ -1,6 +1,6 @@
 # app/api/empresas.py
 # GESTIÓN DE EMPRESAS - SUPER ADMIN + ADMIN CLIENTE
-# VERSIÓN COMPLETA CORREGIDA - CREA PERSONAL + USUARIO AUTOMÁTICAMENTE
+# VERSIÓN COMPLETA CORREGIDA - CREA PERSONAL + USUARIO + CAMPOS BASE AUTOMÁTICAMENTE
 # Jerarquía: super_admin → admin_cliente → admin_empresa → jefe → usuario
 
 from fastapi import APIRouter, Depends, HTTPException, status, Body, Query
@@ -10,17 +10,104 @@ from uuid import UUID
 from datetime import datetime, timedelta, timezone, date
 import re
 import random
+import json
 
 from app.database import get_db
 from app.core.dependencies import get_current_super_admin, get_current_active_user
 from app.models.empresa import Empresa
 from app.models.usuario import Usuario
 from app.models.personal import Personal
+from app.models.configuracion import ConfigCampoPersonal
 from app.models.cliente import Cliente
 from app.core.security import get_password_hash, is_admin, is_super_admin, is_admin_cliente
 from app.schemas.empresa import EmpresaCreate, EmpresaUpdate, EmpresaResponse, EmpresaStatsResponse
 
 router = APIRouter()
+
+# =====================================================
+# CAMPOS BASE DEL SISTEMA - INSERTADOS AUTOMÁTICAMENTE
+# EN CADA NUEVA EMPRESA
+# =====================================================
+CAMPOS_BASE_SISTEMA = [
+    {
+        "campo_id": "nombre",
+        "nombre": "Nombre Completo",
+        "tipo": "texto",
+        "obligatorio": True,
+        "habilitado": True,
+        "sistema": True,
+        "seccion": "personal",
+        "orden": 0,
+        "aplica_a": {"personal": True, "visitante": True},
+        "opciones": [],
+        "descripcion": "Nombre completo del usuario"
+    },
+    {
+        "campo_id": "documento",
+        "nombre": "Documento de Identidad",
+        "tipo": "texto",
+        "obligatorio": True,
+        "habilitado": True,
+        "sistema": True,
+        "seccion": "personal",
+        "orden": 1,
+        "aplica_a": {"personal": True, "visitante": True},
+        "opciones": [],
+        "descripcion": "DNI, CI o pasaporte"
+    },
+    {
+        "campo_id": "sexo",
+        "nombre": "Sexo",
+        "tipo": "selector",
+        "obligatorio": True,
+        "habilitado": True,
+        "sistema": True,
+        "seccion": "personal",
+        "orden": 2,
+        "aplica_a": {"personal": True, "visitante": True},
+        "opciones": ["Masculino", "Femenino", "No especificado"],
+        "descripcion": "Sexo del usuario"
+    },
+    {
+        "campo_id": "fecha_nacimiento",
+        "nombre": "Fecha de Nacimiento",
+        "tipo": "fecha",
+        "obligatorio": True,
+        "habilitado": True,
+        "sistema": True,
+        "seccion": "personal",
+        "orden": 3,
+        "aplica_a": {"personal": True, "visitante": True},
+        "opciones": [],
+        "descripcion": "Fecha de nacimiento"
+    },
+    {
+        "campo_id": "email",
+        "nombre": "Correo Electrónico",
+        "tipo": "email",
+        "obligatorio": False,
+        "habilitado": True,
+        "sistema": True,
+        "seccion": "contacto",
+        "orden": 4,
+        "aplica_a": {"personal": True, "visitante": True},
+        "opciones": [],
+        "descripcion": "Email principal (se genera automáticamente si no se ingresa)"
+    },
+    {
+        "campo_id": "area",
+        "nombre": "Área / Departamento",
+        "tipo": "organigrama",
+        "obligatorio": True,
+        "habilitado": True,
+        "sistema": True,
+        "seccion": "laboral",
+        "orden": 5,
+        "aplica_a": {"personal": True, "visitante": True},
+        "opciones": [],
+        "descripcion": "Área del organigrama"
+    },
+]
 
 
 def ahora_utc():
@@ -47,6 +134,34 @@ def generar_subdominio(nombre: str) -> str:
     sub = re.sub(r'-+', '-', sub)
     sub = sub.strip('-')
     return sub[:50] or 'empresa'
+
+
+def insertar_campos_base_empresa(db: Session, empresa_id: UUID) -> int:
+    insertados = 0
+    for campo in CAMPOS_BASE_SISTEMA:
+        existente = db.query(ConfigCampoPersonal).filter(
+            ConfigCampoPersonal.empresa_id == empresa_id,
+            ConfigCampoPersonal.campo_id == campo["campo_id"]
+        ).first()
+        
+        if not existente:
+            db.add(ConfigCampoPersonal(
+                campo_id=campo["campo_id"],
+                nombre=campo["nombre"],
+                tipo=campo["tipo"],
+                obligatorio=campo["obligatorio"],
+                habilitado=campo["habilitado"],
+                sistema=campo["sistema"],
+                seccion=campo["seccion"],
+                orden=campo["orden"],
+                aplica_a=campo["aplica_a"],
+                opciones=campo["opciones"],
+                empresa_id=empresa_id,
+                descripcion=campo["descripcion"]
+            ))
+            insertados += 1
+    
+    return insertados
 
 
 # =====================================================
@@ -160,10 +275,10 @@ async def listar_empresas(
 async def crear_empresa(
     data: EmpresaCreate,
     db: Session = Depends(get_db),
-    current_user: Usuario = Depends(get_current_active_user)  # ✅ Permite super_admin y admin_cliente
+    current_user: Usuario = Depends(get_current_active_user)
 ):
     """
-    Crea una nueva empresa con su administrador.
+    Crea una nueva empresa con su administrador y campos base de configuración.
     
     PERMISOS:
     - super_admin: puede crear empresas en cualquier cliente
@@ -174,14 +289,15 @@ async def crear_empresa(
     2. Crea la empresa vinculada al cliente
     3. Crea el registro personal del admin_empresa
     4. Crea el usuario admin_empresa vinculado al personal y cliente
-    5. Vincula el admin a la empresa
+    5. Inserta campos base de configuración del sistema
+    6. Vincula el admin a la empresa
+    7. Confirma transacción
     """
     
     # =====================================================
     # 🔐 VALIDACIONES DE PERMISOS Y CLIENTE
     # =====================================================
     
-    # Validar que el cliente existe y está activo
     if data.cliente_id:
         cliente = db.query(Cliente).filter(
             Cliente.id == data.cliente_id,
@@ -193,7 +309,6 @@ async def crear_empresa(
                 detail="El cliente seleccionado no existe o está inactivo"
             )
         
-        # Verificar permisos: admin_cliente solo puede crear en su cliente
         if is_admin_cliente(current_user.rol_global):
             if str(current_user.cliente_id) != str(data.cliente_id):
                 raise HTTPException(
@@ -201,7 +316,6 @@ async def crear_empresa(
                     detail="Solo puedes crear empresas en tu propio cliente"
                 )
     else:
-        # Si no se proporciona cliente_id, solo super_admin puede crear sin cliente
         if not is_super_admin(current_user.rol_global):
             raise HTTPException(
                 status_code=400, 
@@ -234,7 +348,6 @@ async def crear_empresa(
     # =====================================================
     # 📅 FECHA DE VENCIMIENTO
     # =====================================================
-    # Heredar fecha del cliente si tiene, sino 30 días de prueba
     if data.cliente_id and cliente and cliente.fecha_vencimiento:
         fecha_vencimiento = cliente.fecha_vencimiento
         if isinstance(fecha_vencimiento, datetime):
@@ -260,15 +373,14 @@ async def crear_empresa(
         direccion=data.direccion,
         activo=True,
         fecha_vencimiento=fecha_vencimiento,
-        cliente_id=data.cliente_id,  # ✅ Vinculado al cliente
+        cliente_id=data.cliente_id,
     )
     db.add(empresa)
-    db.flush()  # Obtener ID sin hacer commit
+    db.flush()
     
-        # =====================================================
+    # =====================================================
     # 2. CREAR REGISTRO PERSONAL DEL ADMIN_EMPRESA
     # =====================================================
-    import random
     dni_admin = f"{random.randint(10000000, 99999999)}"
     
     admin_personal = Personal(
@@ -303,9 +415,9 @@ async def crear_empresa(
         password_hash=get_password_hash(data.admin_password),
         rol_global="admin_empresa",
         roles=["admin_empresa", "usuario"],
-        empresa_id=empresa.id,          # ✅ Pertenece a esta empresa
-        cliente_id=empresa.cliente_id,  # ✅ Hereda el cliente de la empresa
-        personal_id=admin_personal.id,  # ✅ Vinculado a su registro personal
+        empresa_id=empresa.id,
+        cliente_id=empresa.cliente_id,
+        personal_id=admin_personal.id,
         activo=True
     )
     db.add(admin_usuario)
@@ -317,7 +429,12 @@ async def crear_empresa(
     empresa.admin_id = admin_usuario.id
     
     # =====================================================
-    # 5. CONFIRMAR TRANSACCIÓN
+    # 🆕 5. INSERTAR CAMPOS BASE DE CONFIGURACIÓN
+    # =====================================================
+    campos_insertados = insertar_campos_base_empresa(db, empresa.id)
+    
+    # =====================================================
+    # 6. CONFIRMAR TRANSACCIÓN
     # =====================================================
     db.commit()
     db.refresh(empresa)
@@ -338,7 +455,8 @@ async def crear_empresa(
         "cliente_nombre": cliente.nombre if data.cliente_id and cliente else None,
         "plan": empresa.plan,
         "fecha_vencimiento": empresa.fecha_vencimiento.isoformat() if empresa.fecha_vencimiento else None,
-        "dias_prueba": 30
+        "dias_prueba": 30,
+        "campos_base_insertados": campos_insertados
     }
 
 
@@ -408,13 +526,7 @@ async def mis_empresas(
     db: Session = Depends(get_db),
     current_user: Usuario = Depends(get_current_active_user)
 ):
-    """
-    Retorna las empresas asignadas al usuario actual.
-    - super_admin: ve todas
-    - admin_cliente: ve las de su cliente
-    - admin_empresa/usuario: ve solo su empresa
-    """
-    
+    """Retorna las empresas asignadas al usuario actual."""
     if is_super_admin(current_user.rol_global):
         empresas = db.query(Empresa).filter(Empresa.activo == True).all()
     elif is_admin_cliente(current_user.rol_global) and current_user.cliente_id:
@@ -446,6 +558,46 @@ async def mis_empresas(
 
 
 # =====================================================
+# ENDPOINT DE REPARACIÓN DE CAMPOS
+# =====================================================
+
+@router.post("/{empresa_id}/reparar-campos")
+async def reparar_campos_empresa(
+    empresa_id: UUID,
+    db: Session = Depends(get_db),
+    current_user: Usuario = Depends(get_current_active_user)
+):
+    """
+    Repara/verifica los campos base de configuración de una empresa.
+    Útil si alguna empresa existente no tiene los campos correctos.
+    """
+    empresa = db.query(Empresa).filter(Empresa.id == empresa_id).first()
+    if not empresa:
+        raise HTTPException(status_code=404, detail="Empresa no encontrada")
+    
+    # Verificar acceso
+    if not is_super_admin(current_user.rol_global) and not is_admin_cliente(current_user.rol_global):
+        if str(empresa.id) != str(current_user.empresa_id):
+            raise HTTPException(status_code=403, detail="No tienes acceso a esta empresa")
+    
+    campos_insertados = insertar_campos_base_empresa(db, empresa_id)
+    
+    if campos_insertados > 0:
+        db.commit()
+        return {
+            "message": f"Se insertaron {campos_insertados} campos base faltantes",
+            "empresa_id": str(empresa_id),
+            "campos_insertados": campos_insertados
+        }
+    
+    return {
+        "message": "La empresa ya tiene todos los campos base configurados",
+        "empresa_id": str(empresa_id),
+        "campos_insertados": 0
+    }
+
+
+# =====================================================
 # ENDPOINTS COMUNES
 # =====================================================
 
@@ -460,7 +612,6 @@ async def obtener_empresa(
     if not empresa:
         raise HTTPException(status_code=404, detail="Empresa no encontrada")
     
-    # Verificar acceso
     if not is_super_admin(current_user.rol_global):
         if is_admin_cliente(current_user.rol_global):
             if str(empresa.cliente_id) != str(current_user.cliente_id):
@@ -553,16 +704,13 @@ async def actualizar_empresa(
     if not empresa:
         raise HTTPException(status_code=404, detail="Empresa no encontrada")
     
-    # Solo super_admin, admin_cliente y admin_empresa pueden actualizar
     if not is_admin(current_user.rol_global):
         raise HTTPException(status_code=403, detail="No tienes permisos para actualizar empresas")
     
-    # Admin cliente solo puede actualizar empresas de su cliente
     if is_admin_cliente(current_user.rol_global):
         if str(empresa.cliente_id) != str(current_user.cliente_id):
             raise HTTPException(status_code=403, detail="No tienes acceso a esta empresa")
     
-    # Admin empresa solo puede actualizar su propia empresa
     if current_user.rol_global == "admin_empresa":
         if str(empresa.id) != str(current_user.empresa_id):
             raise HTTPException(status_code=403, detail="Solo puedes actualizar tu propia empresa")
@@ -590,14 +738,13 @@ async def actualizar_empresa(
 async def toggle_estado_empresa(
     empresa_id: UUID,
     db: Session = Depends(get_db),
-    current_user: Usuario = Depends(get_current_active_user)  # ✅ Permite super_admin y admin_cliente
+    current_user: Usuario = Depends(get_current_active_user)
 ):
     """Activa o desactiva una empresa y sus usuarios"""
     empresa = db.query(Empresa).filter(Empresa.id == empresa_id).first()
     if not empresa:
         raise HTTPException(status_code=404, detail="Empresa no encontrada")
     
-    # Verificar permisos
     if not is_super_admin(current_user.rol_global):
         if is_admin_cliente(current_user.rol_global):
             if str(empresa.cliente_id) != str(current_user.cliente_id):
@@ -608,7 +755,6 @@ async def toggle_estado_empresa(
     empresa.activo = not empresa.activo
     empresa.updated_at = ahora_utc()
     
-    # También activar/desactivar usuarios de la empresa (excepto admins)
     if not empresa.activo:
         db.query(Usuario).filter(
             Usuario.empresa_id == empresa_id,
@@ -638,14 +784,13 @@ async def renovar_empresa(
     empresa_id: UUID,
     dias: int = Body(30, ge=1, le=365),
     db: Session = Depends(get_db),
-    current_user: Usuario = Depends(get_current_active_user)  # ✅ Permite super_admin y admin_cliente
+    current_user: Usuario = Depends(get_current_active_user)
 ):
     """Extiende la suscripción de una empresa por N días"""
     empresa = db.query(Empresa).filter(Empresa.id == empresa_id).first()
     if not empresa:
         raise HTTPException(status_code=404, detail="Empresa no encontrada")
     
-    # Verificar permisos
     if not is_super_admin(current_user.rol_global):
         if is_admin_cliente(current_user.rol_global):
             if str(empresa.cliente_id) != str(current_user.cliente_id):

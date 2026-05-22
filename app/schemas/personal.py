@@ -1,7 +1,8 @@
 # schemas/personal.py
 # VERSIÓN COMPLETA - CON SOPORTE PARA MÚLTIPLES TIPOS DE JEFATURA + VISITANTE + EMPRESA_ID
 # Compatible con formato legacy (array) y nuevo (objeto)
-# 🆕 ROLES ACTUALIZADOS: alineados con app/utils/roles.py
+# ROLES ACTUALIZADOS: alineados con app/utils/roles.py
+# CORREGIDO: Validador de sexo acepta Masculino/Femenino/M/F
 
 from pydantic import BaseModel, EmailStr, Field, validator
 from typing import Optional, List, Dict, Any
@@ -42,6 +43,47 @@ ROLES_VALIDOS = [
 ]
 
 # =====================================================
+# VALORES VÁLIDOS DE SEXO
+# =====================================================
+SEXO_VALORES_PERMITIDOS = ['Masculino', 'Femenino', 'No especificado']
+
+def normalizar_sexo(v: Optional[str]) -> Optional[str]:
+    """Normaliza el valor de sexo a uno de los valores permitidos"""
+    if v is None:
+        return None
+    
+    v_normalizado = str(v).strip()
+    
+    # Mapa de normalización
+    mapa_sexo = {
+        'm': 'Masculino',
+        'masculino': 'Masculino',
+        'hombre': 'Masculino',
+        'varon': 'Masculino',
+        'f': 'Femenino',
+        'femenino': 'Femenino',
+        'mujer': 'Femenino',
+        'no especificado': 'No especificado',
+        'no_especificado': 'No especificado',
+        'none': 'No especificado',
+        'otro': 'No especificado',
+    }
+    
+    # Buscar en mapa (case insensitive)
+    v_lower = v_normalizado.lower()
+    if v_lower in mapa_sexo:
+        return mapa_sexo[v_lower]
+    
+    # Buscar en valores permitidos (case insensitive)
+    for permitido in SEXO_VALORES_PERMITIDOS:
+        if v_lower == permitido.lower():
+            return permitido
+    
+    # Si no coincide, devolver No especificado
+    return 'No especificado'
+
+
+# =====================================================
 # SCHEMAS BASE
 # =====================================================
 
@@ -57,7 +99,7 @@ class PersonalBase(BaseModel):
     # =====================================================
     grado: str
     nombre: str
-    sexo: Optional[str] = Field(None, description="Sexo del personal (M, F, No especificado)")
+    sexo: Optional[str] = Field('No especificado', description="Sexo del personal (Masculino, Femenino, No especificado)")
     fecha_nacimiento: Optional[date] = None
     
     # =====================================================
@@ -75,7 +117,7 @@ class PersonalBase(BaseModel):
     condicion: Optional[str] = None
     observaciones: Optional[str] = None
     
-    # 🆕 CAMPO EMPRESA_ID
+    # CAMPO EMPRESA_ID
     empresa_id: Optional[UUID] = None
     
     # =====================================================
@@ -100,13 +142,8 @@ class PersonalBase(BaseModel):
 
     @validator('sexo')
     def validar_sexo(cls, v):
-        """Validar que el sexo sea uno de los valores permitidos"""
-        if v is None:
-            return "No especificado"
-        valores_permitidos = ['M', 'F', 'No especificado']
-        if v not in valores_permitidos:
-            return "No especificado"
-        return v
+        """Validar y normalizar el sexo a uno de los valores permitidos"""
+        return normalizar_sexo(v) or 'No especificado'
     
     @validator('areas_jefatura')
     def validar_areas_jefatura(cls, v):
@@ -140,7 +177,6 @@ class PersonalCreate(PersonalBase):
     def validar_areas_jefatura_creacion(cls, v, values):
         """Validar que jefes tengan al menos un área asignada"""
         roles = values.get('roles', [])
-        # Verificar si tiene rol de jefe (cualquier variante)
         es_jefe = any(r in roles for r in [
             'jefe', 'jefe_area', 'jefe_grupo', 'jefe_departamento',
             'jefe_direccion', 'jefe_subdireccion', 'jefe_division',
@@ -165,7 +201,7 @@ class PersonalUpdate(BaseModel):
     cip: Optional[str] = None
     grado: Optional[str] = None
     nombre: Optional[str] = None
-    sexo: Optional[str] = None
+    sexo: Optional[str] = Field(None, description="Sexo del personal (Masculino, Femenino, No especificado)")
     fecha_nacimiento: Optional[date] = None
     email: Optional[EmailStr] = None
     telefono: Optional[str] = None
@@ -191,10 +227,9 @@ class PersonalUpdate(BaseModel):
 
     @validator('sexo')
     def validar_sexo_actualizacion(cls, v):
+        """Validar y normalizar el sexo - acepta Masculino, Femenino, M, F, etc."""
         if v is None: return v
-        valores_permitidos = ['M', 'F', 'No especificado']
-        if v not in valores_permitidos: return "No especificado"
-        return v
+        return normalizar_sexo(v)
     
     @validator('roles')
     def validar_roles_update(cls, v):
@@ -266,12 +301,8 @@ class CargaMasivaItem(BaseModel):
     
     @validator('SEXO')
     def validar_sexo(cls, v):
-        if not v: return "No especificado"
-        sexo = str(v).strip().upper()
-        if sexo in ['M', 'F']: return sexo
-        if 'MASCULINO' in sexo: return 'M'
-        if 'FEMENINO' in sexo: return 'F'
-        return "No especificado"
+        """Validar y normalizar sexo en carga masiva"""
+        return normalizar_sexo(v) or 'No especificado'
     
     @validator('TELÉFONO')
     def validar_telefono(cls, v):
