@@ -25,7 +25,6 @@ router = APIRouter()
 # =====================================================
 # CONFIGURACIÓN DE DOMINIO PARA WEBAUTHN
 # =====================================================
-# En producción usar el dominio real, en desarrollo localhost
 import os as _os
 WEBAUTHN_RP_ID = _os.getenv("WEBAUTHN_RP_ID", "hospital-pnp.web.app")
 WEBAUTHN_RP_NAME = getattr(settings, 'APP_NAME', 'Human Check')
@@ -93,7 +92,7 @@ async def biometric_register_options(
             "challenge": base64url_encode(challenge),
             "rp": {
                 "name": WEBAUTHN_RP_NAME,
-                "id": WEBAUTHN_RP_ID  # Dominio de producción
+                "id": WEBAUTHN_RP_ID
             },
             "user": {
                 "id": base64url_encode(str(current_user.id).encode()),
@@ -198,7 +197,7 @@ async def biometric_login_options(
         
         options = {
             "challenge": base64url_encode(challenge),
-            "rpId": WEBAUTHN_RP_ID,  # Importante para el frontend
+            "rpId": WEBAUTHN_RP_ID,
             "allowCredentials": [
                 {"id": cred.credential_id, "type": "public-key"}
                 for cred in credenciales
@@ -218,7 +217,7 @@ async def biometric_login_options(
 
 
 # =====================================================
-# VERIFICAR LOGIN
+# VERIFICAR LOGIN (CORREGIDO - Busca por usuario, no por credential_id)
 # =====================================================
 
 @router.post("/biometric/login-verify")
@@ -226,32 +225,46 @@ async def biometric_login_verify(
     request: BiometricLoginVerifyRequest,
     db: Session = Depends(get_db)
 ):
+    """
+    Verifica autenticacion biometrica y retorna JWT.
+    CORREGIDO: Busca primero el usuario por email, luego sus credenciales.
+    """
     try:
-        try:
-            decoded = base64url_decode(request.credential_id)
-            credential_id_clean = base64url_encode(decoded)
-        except:
-            credential_id_clean = request.credential_id
+        print(f"=== LOGIN VERIFY ===")
+        print(f"Email: {request.email}")
         
-        credencial = db.query(BiometricCredential).filter(
-            BiometricCredential.credential_id == credential_id_clean
-        ).first()
-        
-        if not credencial:
-            raise HTTPException(status_code=401, detail="Credencial no encontrada")
-        
+        # 1. Buscar usuario por email
         usuario = db.query(Usuario).filter(
-            Usuario.id == credencial.usuario_id,
             Usuario.email.ilike(request.email),
             Usuario.activo == True
         ).first()
         
         if not usuario:
+            print("Usuario no encontrado")
             raise HTTPException(status_code=401, detail="Usuario no encontrado o inactivo")
         
+        print(f"Usuario encontrado: {usuario.id}")
+        
+        # 2. Buscar TODAS las credenciales de este usuario
+        credenciales = db.query(BiometricCredential).filter(
+            BiometricCredential.usuario_id == usuario.id
+        ).all()
+        
+        print(f"Credenciales del usuario: {len(credenciales)}")
+        
+        if not credenciales:
+            print("Sin credenciales biometricas")
+            raise HTTPException(status_code=401, detail="Sin credenciales biometricas para este usuario")
+        
+        # 3. Usar la primera credencial disponible
+        credencial = credenciales[0]
+        print(f"Usando credencial: {credencial.credential_id[:30]}...")
+        
+        # 4. Actualizar ultimo uso
         credencial.last_used_at = datetime.now(timezone.utc)
         db.commit()
         
+        # 5. Obtener datos de personal
         personal = db.query(Personal).filter(
             Personal.id == usuario.personal_id,
             Personal.activo == True
@@ -260,6 +273,7 @@ async def biometric_login_verify(
         roles = personal.roles if personal else (usuario.roles or [])
         area = personal.area if personal else None
         
+        # 6. Generar JWT
         token_data = {
             "sub": usuario.email,
             "user_id": str(usuario.id),
