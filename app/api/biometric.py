@@ -225,55 +225,38 @@ async def biometric_login_verify(
     request: BiometricLoginVerifyRequest,
     db: Session = Depends(get_db)
 ):
-    """
-    Verifica autenticacion biometrica y retorna JWT.
-    CORREGIDO: Busca primero el usuario por email, luego sus credenciales.
-    """
+    """Verifica autenticacion biometrica y retorna JWT."""
     try:
-        print(f"=== LOGIN VERIFY ===")
-        print(f"Email: {request.email}")
-        
-        # 1. Buscar usuario por email
+        # 1. Buscar usuario por email (IGNORANDO credential_id)
         usuario = db.query(Usuario).filter(
             Usuario.email.ilike(request.email),
             Usuario.activo == True
         ).first()
         
         if not usuario:
-            print("Usuario no encontrado")
-            raise HTTPException(status_code=401, detail="Usuario no encontrado o inactivo")
+            raise HTTPException(status_code=401, detail="Usuario no encontrado")
         
-        print(f"Usuario encontrado: {usuario.id}")
-        
-        # 2. Buscar TODAS las credenciales de este usuario
-        credenciales = db.query(BiometricCredential).filter(
+        # 2. Verificar que tenga credenciales biometricas
+        credencial = db.query(BiometricCredential).filter(
             BiometricCredential.usuario_id == usuario.id
-        ).all()
+        ).first()
         
-        print(f"Credenciales del usuario: {len(credenciales)}")
+        if not credencial:
+            raise HTTPException(status_code=401, detail="Sin credenciales biometricas")
         
-        if not credenciales:
-            print("Sin credenciales biometricas")
-            raise HTTPException(status_code=401, detail="Sin credenciales biometricas para este usuario")
-        
-        # 3. Usar la primera credencial disponible
-        credencial = credenciales[0]
-        print(f"Usando credencial: {credencial.credential_id[:30]}...")
-        
-        # 4. Actualizar ultimo uso
+        # 3. Actualizar ultimo uso
         credencial.last_used_at = datetime.now(timezone.utc)
         db.commit()
         
-        # 5. Obtener datos de personal
+        # 4. Obtener datos de personal
         personal = db.query(Personal).filter(
-            Personal.id == usuario.personal_id,
-            Personal.activo == True
+            Personal.id == usuario.personal_id
         ).first()
         
         roles = personal.roles if personal else (usuario.roles or [])
         area = personal.area if personal else None
         
-        # 6. Generar JWT
+        # 5. Generar JWT
         token_data = {
             "sub": usuario.email,
             "user_id": str(usuario.id),
@@ -289,8 +272,6 @@ async def biometric_login_verify(
             data=token_data,
             expires_delta=timedelta(minutes=settings.JWT_ACCESS_TOKEN_EXPIRE_MINUTES)
         )
-        
-        print(f"Login biometrico exitoso: {usuario.email}")
         
         return {
             "access_token": access_token,
@@ -308,7 +289,7 @@ async def biometric_login_verify(
     except HTTPException:
         raise
     except Exception as e:
-        print(f"Error en login-verify: {e}")
+        print(f"Error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
