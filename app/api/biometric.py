@@ -1,15 +1,14 @@
 # app/api/biometric.py
 """
-RUTAS DE AUTENTICACIÓN BIOMÉTRICA (WebAuthn) - webauthn 2.0.0
+RUTAS DE AUTENTICACIÓN BIOMÉTRICA (WebAuthn) - Completamente Criptográficas y Seguras
 Huella digital, Face ID, PIN
 """
 
-from fastapi import APIRouter, Depends, HTTPException, Body
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 from typing import Optional, Dict
 import os
-import base64
 from datetime import datetime, timezone, timedelta
 
 import webauthn
@@ -18,17 +17,6 @@ from webauthn import (
     verify_registration_response,
 )
 from webauthn.helpers import base64url_to_bytes, bytes_to_base64url
-from webauthn.helpers.exceptions import InvalidAuthenticationResponse, InvalidRegistrationResponse
-from webauthn.helpers.structs import (
-    AuthenticationCredential,
-    RegistrationCredential,
-    AuthenticatorSelectionCriteria,
-    AuthenticatorAttachment,
-    UserVerificationRequirement,
-    ResidentKeyRequirement,
-    RegistrationResponse,
-    AuthenticationResponse,
-)
 
 from app.database import get_db
 from app.core.dependencies import get_current_active_user
@@ -58,8 +46,8 @@ class BiometricRegisterOptionsRequest(BaseModel):
 class BiometricRegisterVerifyRequest(BaseModel):
     credential_id: str
     public_key_pem: str
-    attestation_object: Optional[str] = None
-    client_data_json: Optional[str] = None
+    attestation_object: str
+    client_data_json: str
 
 class BiometricLoginOptionsRequest(BaseModel):
     email: str
@@ -72,13 +60,12 @@ class BiometricLoginVerifyRequest(BaseModel):
     signature: str
 
 # =====================================================
-# FUNCIONES AUXILIARES
+# ALMACENAMIENTO TEMPORAL DE DESAFÍOS (CHALLENGES)
 # =====================================================
+_challenges: Dict[str, str] = {}
 
 def generate_challenge(length: int = 32) -> bytes:
     return os.urandom(length)
-
-_challenges: Dict[str, str] = {}
 
 # =====================================================
 # OPCIONES DE REGISTRO
@@ -96,10 +83,11 @@ async def biometric_register_options(
         
         challenge = generate_challenge()
         user_id = str(current_user.id)
-        _challenges[user_id] = bytes_to_base64url(challenge)
+        
+        _challenges[f"reg_{user_id}"] = bytes_to_base64url(challenge)
         
         options = {
-            "challenge": _challenges[user_id],
+            "challenge": _challenges[f"reg_{user_id}"],
             "rp": {
                 "name": WEBAUTHN_RP_NAME,
                 "id": WEBAUTHN_RP_ID
@@ -110,8 +98,8 @@ async def biometric_register_options(
                 "displayName": current_user.username or current_user.email.split('@')[0]
             },
             "pubKeyCredParams": [
-                {"type": "public-key", "alg": -7},
-                {"type": "public-key", "alg": -257},
+                {"type": "public-key", "alg": -7},    # ES256
+                {"type": "public-key", "alg": -257},  # RS256
             ],
             "timeout": 120000,
             "attestation": "none",
@@ -129,9 +117,8 @@ async def biometric_register_options(
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-
 # =====================================================
-# VERIFICAR REGISTRO
+# VERIFICAR REGISTRO CRIPTOGRÁFICAMENTE
 # =====================================================
 
 @router.post("/biometric/register-verify")
@@ -142,46 +129,56 @@ async def biometric_register_verify(
 ):
     try:
         user_id = str(current_user.id)
-        expected_challenge = _challenges.pop(user_id, None)
+        expected_challenge = _challenges.pop(f"reg_{user_id}", None)
+        
         if not expected_challenge:
-            raise HTTPException(status_code=400, detail="Desafio no encontrado. Reinicie el registro.")
-        
-        # Guardar la llave pública directamente (sin verificación criptográfica compleja)
-        credential_id_clean = request.credential_id
+            raise HTTPException(status_code=400, detail="Desafío no encontrado o expirado. Reinicie el proceso.")
+
         try:
-            decoded = base64url_to_bytes(request.credential_id)
-            credential_id_clean = bytes_to_base64url(decoded)
-        except:
-            pass
-        
+            # Verificación real delegando el tipado dinámico a Python
+            verification = verify_registration_response(
+                credential_id=request.credential_id,
+                attestation_object=request.attestation_object,
+                client_data_json=request.client_data_json,
+                expected_challenge=base64url_to_bytes(expected_challenge),
+                expected_origin=WEBAUTHN_ORIGIN,
+                expected_rp_id=WEBAUTHN_RP_ID,
+                require_user_verification=True
+            )
+        except Exception as verification_error:
+            raise HTTPException(status_code=400, detail=f"Fallo de verificación WebAuthn: {str(verification_error)}")
+
+        credential_id_clean = bytes_to_base64url(verification.credential_id)
+        public_key_clean = bytes_to_base64url(verification.credential_public_key)
+
         existente = db.query(BiometricCredential).filter(
             BiometricCredential.usuario_id == current_user.id
         ).first()
         
         if existente:
             existente.credential_id = credential_id_clean
-            existente.public_key = request.public_key_pem
-            existente.sign_count = 0
-            existente.device_name = "Dispositivo movil"
+            existente.public_key = public_key_clean
+            existente.sign_count = verification.sign_count
+            existente.device_name = "Dispositivo móvil verificado"
+            existente.updated_at = datetime.now(timezone.utc)
         else:
             nueva = BiometricCredential(
                 usuario_id=current_user.id,
                 credential_id=credential_id_clean,
-                public_key=request.public_key_pem,
-                sign_count=0,
-                device_name="Dispositivo movil"
+                public_key=public_key_clean,
+                sign_count=verification.sign_count,
+                device_name="Dispositivo móvil verificado"
             )
             db.add(nueva)
         
         db.commit()
-        return {"success": True, "message": "Registro biometrico exitoso"}
+        return {"success": True, "message": "Dispositivo biométrico registrado de forma segura"}
         
     except HTTPException:
         raise
     except Exception as e:
         db.rollback()
         raise HTTPException(status_code=500, detail=str(e))
-
 
 # =====================================================
 # OPCIONES DE LOGIN
@@ -205,13 +202,13 @@ async def biometric_login_options(
         ).all()
         
         if not credenciales:
-            raise HTTPException(status_code=404, detail="No hay registro biometrico")
+            raise HTTPException(status_code=404, detail="El usuario no cuenta con un registro biométrico activo")
         
         challenge = generate_challenge()
-        _challenges[str(usuario.id)] = bytes_to_base64url(challenge)
+        _challenges[f"login_{usuario.email.lower()}"] = bytes_to_base64url(challenge)
         
         options = {
-            "challenge": _challenges[str(usuario.id)],
+            "challenge": _challenges[f"login_{usuario.email.lower()}"],
             "rpId": WEBAUTHN_RP_ID,
             "allowCredentials": [
                 {"id": cred.credential_id, "type": "public-key"}
@@ -228,9 +225,8 @@ async def biometric_login_options(
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-
 # =====================================================
-# VERIFICAR LOGIN (BUSCA POR EMAIL - FUNCIONAL)
+# VERIFICAR LOGIN (VALIDACIÓN CRIPTOGRÁFICA DE FIRMA)
 # =====================================================
 
 @router.post("/biometric/login-verify")
@@ -238,7 +234,6 @@ async def biometric_login_verify(
     request: BiometricLoginVerifyRequest,
     db: Session = Depends(get_db)
 ):
-    """Verifica autenticacion biometrica y retorna JWT."""
     try:
         usuario = db.query(Usuario).filter(
             Usuario.email.ilike(request.email),
@@ -246,22 +241,42 @@ async def biometric_login_verify(
         ).first()
         
         if not usuario:
-            raise HTTPException(status_code=401, detail="Usuario no encontrado")
+            raise HTTPException(status_code=401, detail="Credenciales inválidas o usuario inactivo")
         
         credencial = db.query(BiometricCredential).filter(
-            BiometricCredential.usuario_id == usuario.id
+            BiometricCredential.usuario_id == usuario.id,
+            BiometricCredential.credential_id == request.credential_id
         ).first()
         
         if not credencial:
-            raise HTTPException(status_code=401, detail="Sin credenciales biometricas")
-        
+            raise HTTPException(status_code=401, detail="Credencial biométrica no reconocida")
+
+        expected_challenge = _challenges.pop(f"login_{usuario.email.lower()}", None)
+        if not expected_challenge:
+            raise HTTPException(status_code=400, detail="Desafío de autenticación vencido. Intente de nuevo.")
+
+        try:
+            # Validación robusta de la firma contra la llave pública almacenada
+            verification = verify_authentication_response(
+                credential_id=request.credential_id,
+                authenticator_data=request.authenticator_data,
+                client_data_json=request.client_data_json,
+                signature=request.signature,
+                credential_public_key=base64url_to_bytes(credencial.public_key),
+                credential_current_sign_count=credencial.sign_count,
+                expected_challenge=base64url_to_bytes(expected_challenge),
+                expected_origin=WEBAUTHN_ORIGIN,
+                expected_rp_id=WEBAUTHN_RP_ID,
+                require_user_verification=True
+            )
+        except Exception as auth_error:
+            raise HTTPException(status_code=401, detail=f"Fallo en la firma biométrica: {str(auth_error)}")
+
+        credencial.sign_count = verification.new_sign_count
         credencial.last_used_at = datetime.now(timezone.utc)
         db.commit()
         
-        personal = db.query(Personal).filter(
-            Personal.id == usuario.personal_id
-        ).first()
-        
+        personal = db.query(Personal).filter(Personal.id == usuario.personal_id).first()
         roles = personal.roles if personal else (usuario.roles or [])
         area = personal.area if personal else None
         
@@ -299,7 +314,6 @@ async def biometric_login_verify(
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-
 # =====================================================
 # ELIMINAR REGISTRO
 # =====================================================
@@ -314,7 +328,7 @@ async def biometric_unregister(
             BiometricCredential.usuario_id == current_user.id
         ).delete()
         db.commit()
-        return {"success": True, "message": "Registro biometrico eliminado"}
+        return {"success": True, "message": "Registro biométrico eliminado correctamente"}
     except Exception as e:
         db.rollback()
         raise HTTPException(status_code=500, detail=str(e))
