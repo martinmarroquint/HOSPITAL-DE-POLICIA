@@ -44,7 +44,7 @@ class BiometricLoginVerifyRequest(BaseModel):
     signature: str
 
 # =====================================================
-# FUNCIONES AUXILIARES
+# FUNCIONES AUXILIARES CORREGIDAS
 # =====================================================
 
 def generate_challenge(length: int = 32) -> bytes:
@@ -52,15 +52,30 @@ def generate_challenge(length: int = 32) -> bytes:
     return os.urandom(length)
 
 def base64url_encode(data: bytes) -> str:
-    """Codifica bytes a base64url sin padding."""
+    """
+    Codifica bytes a base64url sin padding.
+    IMPORTANTE: Usa '-' en vez de '+', '_' en vez de '/', sin '='.
+    """
     return base64.urlsafe_b64encode(data).rstrip(b'=').decode('ascii')
 
 def base64url_decode(data: str) -> bytes:
-    """Decodifica base64url a bytes."""
+    """
+    Decodifica base64url a bytes.
+    Acepta tanto base64url como base64 estándar.
+    """
+    # Asegurar que sea string
+    if isinstance(data, bytes):
+        data = data.decode('ascii')
+    
+    # Reemplazar caracteres url-safe por estándar
+    data = data.replace('-', '+').replace('_', '/')
+    
+    # Agregar padding si falta
     padding = 4 - len(data) % 4
     if padding != 4:
         data += '=' * padding
-    return base64.urlsafe_b64decode(data)
+    
+    return base64.b64decode(data)
 
 # Almacén temporal de challenges (en producción usar Redis)
 _challenges = {}
@@ -88,7 +103,7 @@ async def biometric_register_options(
         challenge = generate_challenge()
         _challenges[str(current_user.id)] = base64url_encode(challenge)
         
-        # Construir opciones
+        # Construir opciones - Todo en base64url
         options = {
             "challenge": base64url_encode(challenge),
             "rp": {
@@ -101,8 +116,8 @@ async def biometric_register_options(
                 "displayName": current_user.username or current_user.email.split('@')[0]
             },
             "pubKeyCredParams": [
-                {"type": "public-key", "alg": -7},
-                {"type": "public-key", "alg": -257},
+                {"type": "public-key", "alg": -7},    # ES256
+                {"type": "public-key", "alg": -257},  # RS256
             ],
             "timeout": 120000,
             "attestation": "none",
@@ -114,6 +129,8 @@ async def biometric_register_options(
         }
         
         print(f"✅ Opciones de registro biométrico para: {current_user.email}")
+        print(f"   Challenge (base64url): {options['challenge'][:20]}...")
+        
         return options
         
     except HTTPException:
@@ -133,22 +150,35 @@ async def biometric_register_verify(
     db: Session = Depends(get_db),
     current_user: Usuario = Depends(get_current_active_user)
 ):
-    """Verifica y guarda la credencial biométrica registrada."""
+    """
+    Verifica y guarda la credencial biométrica registrada.
+    El credential_id viene en base64url desde el frontend.
+    """
     try:
-        # Verificar si ya existe
+        # Decodificar credential_id para guardarlo limpio
+        try:
+            credential_id_decoded = base64url_decode(request.credential_id)
+            credential_id_base64url = base64url_encode(credential_id_decoded)
+        except Exception:
+            # Si falla la decodificación, guardar tal cual
+            credential_id_base64url = request.credential_id
+        
+        # Verificar si ya existe una credencial para este usuario
         existente = db.query(BiometricCredential).filter(
             BiometricCredential.usuario_id == current_user.id
         ).first()
         
         if existente:
-            existente.credential_id = request.credential_id
+            # Actualizar existente
+            existente.credential_id = credential_id_base64url
             existente.public_key = request.public_key_pem
             existente.sign_count = 0
             existente.device_name = "Dispositivo móvil"
         else:
+            # Crear nueva credencial
             nueva = BiometricCredential(
                 usuario_id=current_user.id,
-                credential_id=request.credential_id,
+                credential_id=credential_id_base64url,
                 public_key=request.public_key_pem,
                 sign_count=0,
                 device_name="Dispositivo móvil"
@@ -157,6 +187,7 @@ async def biometric_register_verify(
         
         db.commit()
         print(f"✅ Credencial biométrica registrada: {current_user.email}")
+        print(f"   Credential ID: {credential_id_base64url[:20]}...")
         
         return {"success": True, "message": "Registro biométrico exitoso"}
         
@@ -175,8 +206,12 @@ async def biometric_login_options(
     request: BiometricLoginOptionsRequest,
     db: Session = Depends(get_db)
 ):
-    """Genera opciones para login biométrico. NO requiere auth previa."""
+    """
+    Genera opciones para iniciar sesión con biometría.
+    NO requiere autenticación previa.
+    """
     try:
+        # Buscar usuario por email
         usuario = db.query(Usuario).filter(
             Usuario.email.ilike(request.email)
         ).first()
@@ -184,6 +219,7 @@ async def biometric_login_options(
         if not usuario:
             raise HTTPException(status_code=404, detail="Usuario no encontrado")
         
+        # Buscar credenciales biométricas del usuario
         credenciales = db.query(BiometricCredential).filter(
             BiometricCredential.usuario_id == usuario.id
         ).all()
@@ -191,16 +227,21 @@ async def biometric_login_options(
         if not credenciales:
             raise HTTPException(
                 status_code=404,
-                detail="No hay registro biométrico. Inicie sesión con contraseña primero."
+                detail="No hay registro biométrico para este usuario. Inicie sesión con contraseña primero."
             )
         
+        # Generar challenge
         challenge = generate_challenge()
         _challenges[str(usuario.id)] = base64url_encode(challenge)
         
+        # Construir opciones - Los credential_id ya están en base64url
         options = {
             "challenge": base64url_encode(challenge),
             "allowCredentials": [
-                {"id": cred.credential_id, "type": "public-key"}
+                {
+                    "id": cred.credential_id,
+                    "type": "public-key"
+                }
                 for cred in credenciales
             ],
             "timeout": 60000,
@@ -208,6 +249,8 @@ async def biometric_login_options(
         }
         
         print(f"✅ Opciones login biométrico: {usuario.email}")
+        print(f"   Credenciales encontradas: {len(credenciales)}")
+        
         return options
         
     except HTTPException:
@@ -226,15 +269,27 @@ async def biometric_login_verify(
     request: BiometricLoginVerifyRequest,
     db: Session = Depends(get_db)
 ):
-    """Verifica autenticación biométrica y retorna JWT."""
+    """
+    Verifica la autenticación biométrica y retorna JWT.
+    Los datos vienen en base64url desde el frontend.
+    """
     try:
+        # Decodificar credential_id para comparar
+        try:
+            credential_id_decoded = base64url_decode(request.credential_id)
+            credential_id_base64url = base64url_encode(credential_id_decoded)
+        except Exception:
+            credential_id_base64url = request.credential_id
+        
+        # Buscar credencial
         credencial = db.query(BiometricCredential).filter(
-            BiometricCredential.credential_id == request.credential_id
+            BiometricCredential.credential_id == credential_id_base64url
         ).first()
         
         if not credencial:
-            raise HTTPException(status_code=401, detail="Credencial no encontrada")
+            raise HTTPException(status_code=401, detail="Credencial biométrica no encontrada")
         
+        # Buscar usuario
         usuario = db.query(Usuario).filter(
             Usuario.id == credencial.usuario_id,
             Usuario.email.ilike(request.email),
@@ -307,11 +362,15 @@ async def biometric_unregister(
 ):
     """Elimina el registro biométrico del usuario."""
     try:
-        db.query(BiometricCredential).filter(
+        eliminados = db.query(BiometricCredential).filter(
             BiometricCredential.usuario_id == current_user.id
         ).delete()
         db.commit()
+        
+        print(f"✅ Registro biométrico eliminado para: {current_user.email} ({eliminados} credenciales)")
+        
         return {"success": True, "message": "Registro biométrico eliminado"}
     except Exception as e:
         db.rollback()
+        print(f"❌ Error al eliminar: {e}")
         raise HTTPException(status_code=500, detail=str(e))
