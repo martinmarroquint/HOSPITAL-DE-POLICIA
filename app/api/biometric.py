@@ -108,7 +108,7 @@ async def biometric_register_options(
             "challenge": base64url_encode(challenge),
             "rp": {
                 "name": getattr(settings, 'APP_NAME', 'Human Check'),
-                "id": getattr(settings, 'DOMAIN', 'localhost')
+                "id": "localhost"  # Para desarrollo local
             },
             "user": {
                 "id": base64url_encode(str(current_user.id).encode()),
