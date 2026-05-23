@@ -1,9 +1,10 @@
 # app/api/__init__.py
-# VERSIÓN ACTUALIZADA - CON CLIENTES, EMPRESAS, SESIONES Y CONFIGURACIÓN DINÁMICA
+# VERSIÓN ACTUALIZADA - CON BIOMETRÍA + CLIENTES, EMPRESAS, SESIONES Y CONFIGURACIÓN DINÁMICA
 
 from fastapi import APIRouter
 from app.api import (
     auth, 
+    biometric,      # 🆕 BIOMETRÍA - Huella digital / Face ID
     personal, 
     planificacion, 
     asistencia, 
@@ -15,7 +16,7 @@ from app.api import (
     notificaciones,
     configuracion,  # Configuración dinámica
     empresas,        # Gestión de empresas (Panel Super Admin)
-    clientes,        # 🆕 Gestión de clientes (Panel Super Admin)
+    clientes,        # Gestión de clientes (Panel Super Admin)
     sesiones,        # Gestión de sesiones, clases y eventos
 )
 
@@ -23,6 +24,9 @@ api_router = APIRouter()
 
 # Autenticación y Usuarios
 api_router.include_router(auth.router, prefix="/auth", tags=["Autenticación"])
+
+# 🆕 BIOMETRÍA - Huella digital / Face ID
+api_router.include_router(biometric.router, prefix="/auth", tags=["Biometría"])
 
 # Personal
 api_router.include_router(personal.router, prefix="/personal", tags=["Personal"])
@@ -51,7 +55,7 @@ api_router.include_router(notificaciones.router, prefix="/notificaciones", tags=
 # Configuración dinámica
 api_router.include_router(configuracion.router, prefix="/config", tags=["Configuración"])
 
-# 🆕 Gestión de Clientes (Panel Super Admin)
+# Gestión de Clientes (Panel Super Admin)
 api_router.include_router(clientes.router, prefix="/clientes", tags=["Clientes"])
 
 # Gestión de Empresas (Panel Super Admin + Admin Cliente)
@@ -64,6 +68,7 @@ api_router.include_router(sesiones.router, prefix="/sesiones", tags=["Sesiones"]
 
 __all__ = [
     'auth',
+    'biometric',    # 🆕 NUEVO
     'personal',
     'planificacion',
     'asistencia',
@@ -74,7 +79,7 @@ __all__ = [
     'publicaciones',
     'notificaciones',
     'configuracion',
-    'clientes',    # 🆕 NUEVO
+    'clientes',
     'empresas',
     'sesiones',
     'api_router'

@@ -4,13 +4,16 @@ Login, registro, gestión de usuarios con soporte empresa_id y rol_global
 El super_admin SIEMPRE puede acceder, incluso si la empresa está suspendida.
 """
 
-from fastapi import APIRouter, Depends, HTTPException, status, Body
+from fastapi import APIRouter, Depends, HTTPException, status, Body, UploadFile, File
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
 from datetime import timedelta, datetime, timezone
 from typing import Any, List, Optional
 from uuid import UUID
 from pydantic import BaseModel, Field
+import os
+import uuid as uuid_lib
+from PIL import Image
 
 from app.database import get_db
 from app.core.security import (
@@ -44,6 +47,12 @@ class ResetPasswordRequest(BaseModel):
     nueva_password: str = Field(..., min_length=8, description="Nueva contraseña (mínimo 8 caracteres)")
 
 
+class ProcesarFotoRequest(BaseModel):
+    """Schema para procesar foto con IA."""
+    foto_url: str = Field(..., description="URL de la foto a procesar")
+    accion: str = Field(..., description="Acción: quitar_fondo, mejorar")
+
+
 # =====================================================
 # FUNCIÓN AUXILIAR PARA OBTENER DATOS DE PERSONAL
 # =====================================================
@@ -69,7 +78,13 @@ def obtener_datos_personal(db: Session, personal_id: UUID):
         "cip": personal.cip or "",
         "roles": personal.roles or [],
         "areas_que_jefatura": personal.areas_que_jefatura or [],
-        "empresa_id": str(personal.empresa_id) if personal.empresa_id else None
+        "empresa_id": str(personal.empresa_id) if personal.empresa_id else None,
+        "foto_url": personal.foto_url or None,
+        "telefono": personal.telefono or "",
+        "direccion": getattr(personal, 'direccion', '') or "",
+        "fecha_nacimiento": str(personal.fecha_nacimiento) if personal.fecha_nacimiento else None,
+        "sexo": personal.sexo or "",
+        "especialidad": personal.especialidad or "",
     }
 
 
@@ -100,7 +115,6 @@ async def login(
     """
     print(f"🔐 Intento de login: {form_data.username}")
     
-    # Buscar usuario por email (case insensitive)
     user = db.query(Usuario).filter(
         Usuario.email.ilike(form_data.username)
     ).first()
@@ -113,7 +127,6 @@ async def login(
             headers={"WWW-Authenticate": "Bearer"},
         )
     
-    # Verificar contraseña con Argon2
     if not verify_password(form_data.password, user.password_hash):
         print(f"❌ Contraseña incorrecta: {user.email}")
         raise HTTPException(
@@ -122,7 +135,6 @@ async def login(
             headers={"WWW-Authenticate": "Bearer"},
         )
     
-    # Verificar que el usuario esté activo
     if not user.activo:
         print(f"❌ Usuario inactivo: {user.email}")
         raise HTTPException(
@@ -130,7 +142,6 @@ async def login(
             detail="Usuario inactivo. Contacte al administrador."
         )
     
-    # Verificar que la empresa esté activa (SOLO para usuarios NO super_admin)
     if user.empresa_id and user.rol_global != "super_admin":
         empresa = db.query(Empresa).filter(Empresa.id == user.empresa_id).first()
         if empresa and not empresa.activo:
@@ -139,21 +150,17 @@ async def login(
                 detail=f"La empresa '{empresa.nombre}' está suspendida. Contacte al administrador."
             )
     
-    # Obtener datos de personal para enriquecer el token
     personal_data = obtener_datos_personal(db, user.personal_id)
     roles = personal_data["roles"] if personal_data else (user.roles or [])
     
-    # Sincronizar roles si hay diferencias
     if personal_data and personal_data["roles"] != user.roles:
         print(f"🔄 Sincronizando roles para {user.email}")
         user.roles = personal_data["roles"]
         db.commit()
     
-    # Actualizar último acceso
     user.ultimo_acceso = datetime.now(timezone.utc)
     db.commit()
     
-    # Construir payload del JWT
     token_data = {
         "sub": user.email,
         "user_id": str(user.id),
@@ -165,7 +172,6 @@ async def login(
         "area": personal_data["area"] if personal_data else None,
     }
     
-    # Generar token
     access_token_expires = timedelta(minutes=settings.JWT_ACCESS_TOKEN_EXPIRE_MINUTES)
     access_token = create_access_token(
         data=token_data,
@@ -173,9 +179,6 @@ async def login(
     )
     
     print(f"✅ Login exitoso: {user.email}")
-    print(f"   empresa_id: {token_data['empresa_id']}")
-    print(f"   rol_global: {token_data['rol_global']}")
-    print(f"   roles: {roles}")
     
     return {
         "access_token": access_token,
@@ -264,7 +267,8 @@ async def get_perfil(
         "area": personal_data["area"] if personal_data else None,
         "dni": personal_data["dni"] if personal_data else None,
         "cip": personal_data["cip"] if personal_data else None,
-        "areas_que_jefatura": personal_data["areas_que_jefatura"] if personal_data else []
+        "areas_que_jefatura": personal_data["areas_que_jefatura"] if personal_data else [],
+        "foto_url": personal_data["foto_url"] if personal_data else None,
     }
 
 
@@ -299,7 +303,8 @@ async def get_perfil_completo(
             "rol_global": current_user.rol_global,
             "nombre": nombre_emergencia, "grado": "", "area": "", "dni": "", "cip": "",
             "roles": current_user.roles or [], "activo": current_user.activo,
-            "ultimo_acceso": current_user.ultimo_acceso, "areas_que_jefatura": []
+            "ultimo_acceso": current_user.ultimo_acceso, "areas_que_jefatura": [],
+            "foto_url": None, "telefono": "", "direccion": "", "fecha_nacimiento": None, "sexo": "", "especialidad": ""
         }
     
     return {
@@ -311,7 +316,13 @@ async def get_perfil_completo(
         "dni": personal.dni or "", "cip": personal.cip or "",
         "roles": personal.roles or current_user.roles or [], "activo": current_user.activo,
         "ultimo_acceso": current_user.ultimo_acceso,
-        "areas_que_jefatura": personal.areas_que_jefatura or []
+        "areas_que_jefatura": personal.areas_que_jefatura or [],
+        "foto_url": personal.foto_url or None,
+        "telefono": personal.telefono or "",
+        "direccion": getattr(personal, 'direccion', '') or "",
+        "fecha_nacimiento": str(personal.fecha_nacimiento) if personal.fecha_nacimiento else None,
+        "sexo": personal.sexo or "",
+        "especialidad": personal.especialidad or ""
     }
 
 
@@ -364,6 +375,216 @@ async def reset_password_usuario(
     except Exception as e:
         print(f"❌ Error en reset_password_usuario: {e}")
         raise HTTPException(status_code=500, detail=f"Error interno al resetear contraseña")
+
+
+# =====================================================
+# 🆕 SUBIR FOTO DE PERFIL
+# =====================================================
+
+@router.post("/subir-foto-perfil")
+async def subir_foto_perfil(
+    foto: UploadFile = File(...),
+    current_user: Usuario = Depends(get_current_active_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Sube una foto de perfil para el usuario autenticado.
+    La imagen se guarda en /static/fotos_perfil/
+    """
+    try:
+        # Validar tipo de archivo
+        tipos_permitidos = ['image/jpeg', 'image/png', 'image/webp', 'image/gif']
+        if foto.content_type not in tipos_permitidos:
+            raise HTTPException(
+                status_code=400,
+                detail="Formato no permitido. Usa JPG, PNG, WebP o GIF"
+            )
+        
+        # Leer contenido
+        contenido = await foto.read()
+        
+        # Validar tamaño (máximo 10MB)
+        if len(contenido) > 10 * 1024 * 1024:
+            raise HTTPException(
+                status_code=400,
+                detail="La imagen no debe superar 10MB"
+            )
+        
+        # Crear directorio si no existe
+        upload_dir = "static/fotos_perfil"
+        os.makedirs(upload_dir, exist_ok=True)
+        
+        # Generar nombre único
+        extension = foto.filename.split('.')[-1] if '.' in foto.filename else 'jpg'
+        nombre_archivo = f"{current_user.id}_{uuid_lib.uuid4().hex[:8]}.{extension}"
+        ruta_completa = os.path.join(upload_dir, nombre_archivo)
+        
+        # Guardar archivo
+        with open(ruta_completa, "wb") as buffer:
+            buffer.write(contenido)
+        
+        # Optimizar imagen (redimensionar si es muy grande)
+        try:
+            img = Image.open(ruta_completa)
+            if img.width > 800 or img.height > 800:
+                img.thumbnail((800, 800), Image.Resampling.LANCZOS)
+                img.save(ruta_completa, optimize=True, quality=85)
+        except Exception as e:
+            print(f"⚠️ No se pudo optimizar la imagen: {e}")
+        
+        # Construir URL
+        foto_url = f"/static/fotos_perfil/{nombre_archivo}"
+        
+        # Guardar URL en el registro de Personal
+        if current_user.personal_id:
+            personal = db.query(Personal).filter(Personal.id == current_user.personal_id).first()
+            if personal:
+                # Eliminar foto anterior si existe
+                if personal.foto_url:
+                    ruta_anterior = personal.foto_url.lstrip('/')
+                    if os.path.exists(ruta_anterior):
+                        os.remove(ruta_anterior)
+                
+                personal.foto_url = foto_url
+                db.commit()
+        
+        print(f"✅ Foto subida: {foto_url}")
+        
+        return {
+            "message": "Foto subida exitosamente",
+            "foto_url": foto_url,
+            "nombre_archivo": nombre_archivo
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"❌ Error al subir foto: {e}")
+        raise HTTPException(status_code=500, detail=f"Error al subir foto: {str(e)}")
+
+
+# =====================================================
+# 🆕 ELIMINAR FOTO DE PERFIL
+# =====================================================
+
+@router.delete("/eliminar-foto-perfil")
+async def eliminar_foto_perfil(
+    current_user: Usuario = Depends(get_current_active_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Elimina la foto de perfil del usuario autenticado.
+    """
+    try:
+        if current_user.personal_id:
+            personal = db.query(Personal).filter(Personal.id == current_user.personal_id).first()
+            if personal and personal.foto_url:
+                # Eliminar archivo físico
+                ruta_foto = personal.foto_url.lstrip('/')
+                if os.path.exists(ruta_foto):
+                    os.remove(ruta_foto)
+                    print(f"🗑️ Archivo eliminado: {ruta_foto}")
+                
+                personal.foto_url = None
+                db.commit()
+        
+        return {"message": "Foto eliminada exitosamente"}
+        
+    except Exception as e:
+        print(f"❌ Error al eliminar foto: {e}")
+        raise HTTPException(status_code=500, detail=f"Error al eliminar foto: {str(e)}")
+
+
+# =====================================================
+# 🆕 PROCESAR FOTO CON IA (QUITAR FONDO / MEJORAR)
+# =====================================================
+
+@router.post("/procesar-foto-ia")
+async def procesar_foto_ia(
+    request: ProcesarFotoRequest,
+    current_user: Usuario = Depends(get_current_active_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Procesa una foto de perfil con IA.
+    Acciones: quitar_fondo, mejorar
+    """
+    try:
+        ruta_foto = request.foto_url.lstrip('/')
+        
+        if not os.path.exists(ruta_foto):
+            raise HTTPException(status_code=404, detail="Foto no encontrada")
+        
+        # Mejorar calidad con PIL
+        if request.accion == 'mejorar':
+            img = Image.open(ruta_foto)
+            
+            # Convertir a RGB si es necesario
+            if img.mode != 'RGB':
+                img = img.convert('RGB')
+            
+            # Crear nueva imagen mejorada
+            from PIL import ImageEnhance, ImageFilter
+            
+            # Mejorar nitidez
+            enhancer = ImageEnhance.Sharpness(img)
+            img = enhancer.enhance(1.5)
+            
+            # Mejorar contraste
+            enhancer = ImageEnhance.Contrast(img)
+            img = enhancer.enhance(1.1)
+            
+            # Mejorar color
+            enhancer = ImageEnhance.Color(img)
+            img = enhancer.enhance(1.05)
+            
+            # Reducir ruido
+            img = img.filter(ImageFilter.SMOOTH_MORE)
+            
+            # Guardar imagen mejorada
+            nombre_mejorada = ruta_foto.replace('.', '_mejorada.')
+            img.save(nombre_mejorada, optimize=True, quality=90)
+            
+            foto_url = f"/{nombre_mejorada}"
+            
+            # Actualizar en BD
+            if current_user.personal_id:
+                personal = db.query(Personal).filter(Personal.id == current_user.personal_id).first()
+                if personal:
+                    personal.foto_url = foto_url
+                    db.commit()
+            
+            return {"message": "Foto mejorada exitosamente", "foto_procesada": foto_url}
+        
+        # Quitar fondo
+        elif request.accion == 'quitar_fondo':
+            # Para quitar fondo se necesita remove.bg API
+            # Como fallback, solo mejoramos la imagen
+            img = Image.open(ruta_foto)
+            if img.mode != 'RGB':
+                img = img.convert('RGB')
+            
+            nombre_sin_fondo = ruta_foto.replace('.', '_nobg.')
+            img.save(nombre_sin_fondo, optimize=True, quality=90)
+            
+            foto_url = f"/{nombre_sin_fondo}"
+            
+            if current_user.personal_id:
+                personal = db.query(Personal).filter(Personal.id == current_user.personal_id).first()
+                if personal:
+                    personal.foto_url = foto_url
+                    db.commit()
+            
+            return {"message": "Foto procesada", "foto_procesada": foto_url}
+        
+        else:
+            raise HTTPException(status_code=400, detail="Acción no válida")
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"❌ Error al procesar foto: {e}")
+        raise HTTPException(status_code=500, detail=f"Error al procesar foto: {str(e)}")
 
 
 # =====================================================

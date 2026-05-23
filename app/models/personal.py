@@ -32,6 +32,7 @@ class Personal(Base):
     # =====================================================
     email = Column(String(100), unique=True, nullable=False)
     telefono = Column(String(20))
+    foto_url = Column(String(500), nullable=True)
     
     # =====================================================
     # CAMPOS LABORALES
