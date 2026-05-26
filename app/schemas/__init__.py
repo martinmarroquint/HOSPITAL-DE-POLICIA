@@ -1,5 +1,5 @@
 # app/schemas/__init__.py
-# VERSIÓN ACTUALIZADA - CON SCHEMAS DE CLIENTES, EMPRESAS, PUBLICACIONES Y NOTIFICACIONES
+# VERSIÓN ACTUALIZADA - CON CARTERA DE SERVICIOS MÉDICOS
 
 from app.schemas.auth import *
 from app.schemas.personal import *
@@ -9,8 +9,9 @@ from app.schemas.descanso_medico import *
 from app.schemas.solicitud_cambio import *
 from app.schemas.publicacion import *
 from app.schemas.notificacion import *
-from app.schemas.empresa import *   # Schemas de Empresas
-from app.schemas.cliente import *   # 🆕 Schemas de Clientes
+from app.schemas.empresa import *
+from app.schemas.cliente import *
+from app.schemas.cartera import *   # NUEVO - Cartera de Servicios Médicos
 
 __all__ = [
     # AUTH
@@ -60,4 +61,8 @@ __all__ = [
     # CLIENTES
     "ClienteCreate", "ClienteUpdate", "ClienteResponse",
     "ClienteDetailResponse", "ClienteStatsResponse",
+    
+    # CARTERA DE SERVICIOS MÉDICOS
+    "ResultadoValidacion", "EspecialidadResponse", "MedicoResponse",
+    "CargaResponse", "HorarioResponse",
 ]

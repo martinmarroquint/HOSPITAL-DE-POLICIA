@@ -15,6 +15,8 @@ EXCLUDED_PATHS: List[str] = [
     "/api/v1/auth/check-user",
     "/api/v1/auth/verificar",
     "/api/v1/config/cliente/publico",
+    "/api/v1/cartera",
+    "/api/v1/cartera/",
     "/docs",
     "/redoc",
     "/openapi.json",

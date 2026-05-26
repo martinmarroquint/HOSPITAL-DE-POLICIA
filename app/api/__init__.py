@@ -1,10 +1,10 @@
 # app/api/__init__.py
-# VERSIÓN ACTUALIZADA - CON BIOMETRÍA + CLIENTES, EMPRESAS, SESIONES Y CONFIGURACIÓN DINÁMICA
+# VERSIÓN ACTUALIZADA - CON BIOMETRÍA + CLIENTES, EMPRESAS, SESIONES, CARTERA Y CONFIGURACIÓN DINÁMICA
 
 from fastapi import APIRouter
 from app.api import (
     auth, 
-    biometric,      # 🆕 BIOMETRÍA - Huella digital / Face ID
+    biometric,
     personal, 
     planificacion, 
     asistencia, 
@@ -14,10 +14,11 @@ from app.api import (
     configuracion_mensual, 
     publicaciones, 
     notificaciones,
-    configuracion,  # Configuración dinámica
-    empresas,        # Gestión de empresas (Panel Super Admin)
-    clientes,        # Gestión de clientes (Panel Super Admin)
-    sesiones,        # Gestión de sesiones, clases y eventos
+    configuracion,
+    empresas,
+    clientes,
+    sesiones,
+    cartera,        # NUEVO - Cartera de Servicios Médicos
 )
 
 api_router = APIRouter()
@@ -25,7 +26,7 @@ api_router = APIRouter()
 # Autenticación y Usuarios
 api_router.include_router(auth.router, prefix="/auth", tags=["Autenticación"])
 
-# 🆕 BIOMETRÍA - Huella digital / Face ID
+# Biometría - Huella digital / Face ID
 api_router.include_router(biometric.router, prefix="/auth", tags=["Biometría"])
 
 # Personal
@@ -64,11 +65,14 @@ api_router.include_router(empresas.router, prefix="/empresas", tags=["Empresas"]
 # Sesiones y Clases (Check-in de visitantes)
 api_router.include_router(sesiones.router, prefix="/sesiones", tags=["Sesiones"])
 
+# Cartera de Servicios Médicos (Portal Público + Carga Excel)
+api_router.include_router(cartera.router, prefix="/cartera", tags=["Cartera de Servicios"])
+
 # ⚠️ configuracion_mensual se incluye directamente en main.py
 
 __all__ = [
     'auth',
-    'biometric',    # 🆕 NUEVO
+    'biometric',
     'personal',
     'planificacion',
     'asistencia',
@@ -82,5 +86,6 @@ __all__ = [
     'clientes',
     'empresas',
     'sesiones',
+    'cartera',       # NUEVO
     'api_router'
 ]

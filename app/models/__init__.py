@@ -1,5 +1,5 @@
 # app/models/__init__.py
-# VERSION ACTUALIZADA - CON BIOMETRÍA + METAS DE CUMPLIMIENTO + ROTACIONES
+# VERSION ACTUALIZADA - CON BIOMETRÍA + METAS + ROTACIONES + CARTERA
 
 from app.models.usuario import Usuario
 from app.models.personal import Personal
@@ -20,7 +20,10 @@ from app.models.publicacion import Publicacion, PublicacionVista
 from app.models.notificacion import Notificacion
 from app.models.meta_cumplimiento import MetaCumplimiento
 from app.models.rotacion import Rotacion
-from app.models.biometric import BiometricCredential  # 🆕 BIOMETRÍA
+from app.models.biometric import BiometricCredential
+
+# Cartera de Servicios Médicos
+from app.models.cartera import Especialidad, Programacion, CargaExcel
 
 # Configuracion dinamica
 from app.models.configuracion import (
@@ -89,8 +92,13 @@ __all__ = [
     "PublicacionVista",
     "Notificacion",
     
-    # 🆕 BIOMETRÍA
+    # BIOMETRÍA
     "BiometricCredential",
+    
+    # CARTERA DE SERVICIOS MÉDICOS
+    "Especialidad",
+    "Programacion",
+    "CargaExcel",
     
     # CONFIGURACION DINAMICA
     "ConfigTurno",

@@ -1,6 +1,5 @@
 # app/main.py
-# VERSIÓN ACTUALIZADA - CON BIOMETRÍA + CLIENTES, EMPRESAS Y JERARQUÍA COMPLETA
-# Soporte: super_admin → admin_cliente → admin_empresa → jefe_unidad → usuario
+# VERSIÓN ACTUALIZADA - CON CARTERA DE SERVICIOS MÉDICOS
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -58,7 +57,7 @@ app = FastAPI(
     openapi_url=openapi_url,
     openapi_tags=[
         {"name": "Autenticación", "description": "Endpoints para autenticación y gestión de usuarios"},
-        {"name": "Biometría", "description": "🆕 Autenticación biométrica - Huella digital / Face ID"},
+        {"name": "Biometría", "description": "Autenticación biométrica - Huella digital / Face ID"},
         {"name": "Personal", "description": "Gestión de personal"},
         {"name": "Planificación", "description": "Planificación de turnos y horarios"},
         {"name": "Asistencia", "description": "Registro y control de asistencia"},
@@ -73,6 +72,7 @@ app = FastAPI(
         {"name": "Clientes", "description": "Panel Super Admin - Gestión de clientes y organizaciones"},
         {"name": "Empresas", "description": "Panel Super Admin / Admin Cliente - Gestión de empresas"},
         {"name": "Sesiones", "description": "Gestión de sesiones, clases y eventos"},
+        {"name": "Cartera de Servicios", "description": "Portal público de cartera médica y carga de Excel"},
         {"name": "Sistema", "description": "Endpoints de sistema y monitoreo"}
     ]
 )
@@ -153,11 +153,12 @@ app.include_router(api_router, prefix=settings.API_V1_PREFIX)
 
 # Módulos cargados (para diagnóstico)
 modulos_existentes = [
-    'auth', 'biometric',  # 🆕 BIOMETRÍA
+    'auth', 'biometric',
     'personal', 'planificacion', 'asistencia',
     'descansos_medicos', 'solicitudes_cambio', 'qr', 'configuracion_mensual',
     'publicaciones', 'notificaciones', 'configuracion',
-    'clientes', 'empresas', 'sesiones'
+    'clientes', 'empresas', 'sesiones',
+    'cartera_servicios'  # NUEVO MÓDULO
 ]
 
 logger.info(f"✅ Módulos cargados: {', '.join(modulos_existentes)}")
@@ -215,7 +216,8 @@ async def system_info():
         },
         "cors_origins": ALLOWED_ORIGINS,
         "modulos": modulos_existentes,
-        "biometria": "🆕 Disponible",
+        "biometria": "Disponible",
+        "cartera_servicios": "Disponible",
         "timestamp": datetime.utcnow().isoformat()
     }
 
@@ -258,6 +260,7 @@ async def startup_event():
     logger.info(f"🏢 Middleware multi-empresa: ACTIVO")
     logger.info(f"👥 Jerarquía: super_admin → admin_cliente → admin_empresa → jefe_unidad → usuario")
     logger.info(f"🔐 Biometría: DISPONIBLE")
+    logger.info(f"🏥 Cartera de Servicios: DISPONIBLE")
     logger.info("=" * 60)
     await startup_db_events()
     db_connected, _ = check_db_connection()
