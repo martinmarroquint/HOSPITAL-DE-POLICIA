@@ -57,8 +57,8 @@ class ProcesarFotoRequest(BaseModel):
 # FUNCIÓN AUXILIAR PARA OBTENER DATOS DE PERSONAL
 # =====================================================
 
-def obtener_datos_personal(db: Session, personal_id: UUID):
-    """Obtiene los datos de personal incluyendo roles y áreas que jefatura."""
+def obtener_datos_personal_individual(db: Session, personal_id: UUID):
+    """Obtiene los datos de un SOLO personal. Usar solo cuando sea un único registro."""
     if not personal_id:
         return None
     
@@ -86,6 +86,49 @@ def obtener_datos_personal(db: Session, personal_id: UUID):
         "sexo": personal.sexo or "",
         "especialidad": personal.especialidad or "",
     }
+
+
+def obtener_datos_personal_lote(db: Session, personal_ids: List[UUID]) -> dict:
+    """
+    Obtiene los datos de MÚLTIPLES personal en UNA SOLA consulta.
+    Evita el problema N+1 queries.
+    Retorna un diccionario {personal_id: datos}
+    """
+    if not personal_ids:
+        return {}
+    
+    # Filtrar IDs None
+    ids_validos = [pid for pid in personal_ids if pid is not None]
+    if not ids_validos:
+        return {}
+    
+    # UNA SOLA consulta para todos los personal
+    personales = db.query(Personal).filter(
+        Personal.id.in_(ids_validos),
+        Personal.activo == True
+    ).all()
+    
+    # Construir mapa
+    resultado = {}
+    for personal in personales:
+        resultado[personal.id] = {
+            "nombre": personal.nombre,
+            "grado": personal.grado or "",
+            "area": personal.area or "",
+            "dni": personal.dni or "",
+            "cip": personal.cip or "",
+            "roles": personal.roles or [],
+            "areas_que_jefatura": personal.areas_que_jefatura or [],
+            "empresa_id": str(personal.empresa_id) if personal.empresa_id else None,
+            "foto_url": personal.foto_url or None,
+            "telefono": personal.telefono or "",
+            "direccion": getattr(personal, 'direccion', '') or "",
+            "fecha_nacimiento": str(personal.fecha_nacimiento) if personal.fecha_nacimiento else None,
+            "sexo": personal.sexo or "",
+            "especialidad": personal.especialidad or "",
+        }
+    
+    return resultado
 
 
 def verificar_acceso_empresa(current_user: Usuario, target_empresa_id: UUID) -> bool:
@@ -150,7 +193,7 @@ async def login(
                 detail=f"La empresa '{empresa.nombre}' está suspendida. Contacte al administrador."
             )
     
-    personal_data = obtener_datos_personal(db, user.personal_id)
+    personal_data = obtener_datos_personal_individual(db, user.personal_id)
     roles = personal_data["roles"] if personal_data else (user.roles or [])
     
     if personal_data and personal_data["roles"] != user.roles:
@@ -250,7 +293,7 @@ async def get_perfil(
     db: Session = Depends(get_db)
 ):
     """Obtiene el perfil completo del usuario autenticado."""
-    personal_data = obtener_datos_personal(db, current_user.personal_id)
+    personal_data = obtener_datos_personal_individual(db, current_user.personal_id)
     
     return {
         "id": current_user.id,
@@ -626,7 +669,7 @@ async def crear_usuario_auth(
     db.commit()
     db.refresh(usuario)
     
-    personal_data = obtener_datos_personal(db, personal_id)
+    personal_data = obtener_datos_personal_individual(db, personal_id)
     return {
         "id": usuario.id, "email": usuario.email, "username": usuario.username,
         "personal_id": usuario.personal_id, "empresa_id": usuario.empresa_id,
@@ -642,33 +685,86 @@ async def crear_usuario_auth(
     }
 
 
-@router.get("/usuarios", response_model=List[UserProfile])
+@router.get("/usuarios")
 async def listar_usuarios_auth(
+    limit: int = 200,
+    offset: int = 0,
+    activo: Optional[bool] = None,
+    ordenar_por: Optional[str] = "email",
+    orden: Optional[str] = "asc",
     db: Session = Depends(get_db),
     current_user: Usuario = Depends(require_roles(["admin"]))
 ):
-    """Lista usuarios - super_admin ve todos, admin_empresa solo su empresa."""
-    if current_user.rol_global == "super_admin":
-        usuarios = db.query(Usuario).all()
-    else:
-        usuarios = db.query(Usuario).filter(Usuario.empresa_id == current_user.empresa_id).all()
+    """
+    Lista usuarios de autenticación con paginación y SIN N+1 queries.
     
+    Parámetros:
+    - limit: máximo de registros (default 200)
+    - offset: desplazamiento para paginación
+    - activo: filtrar por estado (true/false)
+    - ordenar_por: campo para ordenar (email, id)
+    - orden: dirección (asc, desc)
+    """
+    # Construir query base
+    if current_user.rol_global == "super_admin":
+        query = db.query(Usuario)
+    else:
+        query = db.query(Usuario).filter(
+            Usuario.empresa_id == current_user.empresa_id
+        )
+    
+    # Filtrar por activo si se especifica
+    if activo is not None:
+        query = query.filter(Usuario.activo == activo)
+    
+    # Ordenar
+    if ordenar_por == "id":
+        order_col = Usuario.id
+    else:
+        order_col = Usuario.email
+    
+    if orden == "desc":
+        query = query.order_by(order_col.desc())
+    else:
+        query = query.order_by(order_col.asc())
+    
+    # Aplicar límite y offset
+    usuarios = query.offset(offset).limit(limit).all()
+    
+    # =====================================================
+    # OPTIMIZACIÓN: Obtener todos los personal en UNA SOLA query
+    # Esto evita el problema N+1 queries
+    # =====================================================
+    personal_ids = [u.personal_id for u in usuarios if u.personal_id]
+    personal_map = obtener_datos_personal_lote(db, personal_ids)
+    
+    # Construir resultados
     resultados = []
     for usuario in usuarios:
-        personal_data = obtener_datos_personal(db, usuario.personal_id)
-        resultados.append({
-            "id": usuario.id, "email": usuario.email, "username": usuario.username,
-            "personal_id": usuario.personal_id, "empresa_id": usuario.empresa_id,
+        personal_data = personal_map.get(usuario.personal_id)
+        
+        resultado = {
+            "id": usuario.id,
+            "email": usuario.email,
+            "username": usuario.username,
+            "personal_id": usuario.personal_id,
+            "empresa_id": usuario.empresa_id,
             "rol_global": usuario.rol_global,
             "roles": personal_data["roles"] if personal_data else (usuario.roles or []),
-            "activo": usuario.activo, "ultimo_acceso": usuario.ultimo_acceso,
+            "activo": usuario.activo,
+            "ultimo_acceso": usuario.ultimo_acceso,
             "nombre": personal_data["nombre"] if personal_data else None,
             "grado": personal_data["grado"] if personal_data else None,
             "area": personal_data["area"] if personal_data else None,
             "dni": personal_data["dni"] if personal_data else None,
             "cip": personal_data["cip"] if personal_data else None,
-            "areas_que_jefatura": personal_data["areas_que_jefatura"] if personal_data else []
-        })
+            "areas_que_jefatura": personal_data["areas_que_jefatura"] if personal_data else [],
+            "foto_url": personal_data["foto_url"] if personal_data else None,
+            "telefono": personal_data["telefono"] if personal_data else None,
+            "sexo": personal_data["sexo"] if personal_data else None,
+        }
+        resultados.append(resultado)
+    
     return resultados
 
 
@@ -685,7 +781,7 @@ async def obtener_usuario_auth(
     if not verificar_acceso_empresa(current_user, usuario.empresa_id):
         raise HTTPException(status_code=403, detail="No tiene acceso a este usuario")
     
-    personal_data = obtener_datos_personal(db, usuario.personal_id)
+    personal_data = obtener_datos_personal_individual(db, usuario.personal_id)
     return {
         "id": usuario.id, "email": usuario.email, "username": usuario.username,
         "personal_id": usuario.personal_id, "empresa_id": usuario.empresa_id,
@@ -738,7 +834,7 @@ async def actualizar_usuario_auth(
     db.commit()
     db.refresh(usuario)
     
-    personal_data = obtener_datos_personal(db, usuario.personal_id)
+    personal_data = obtener_datos_personal_individual(db, usuario.personal_id)
     return {
         "id": usuario.id, "email": usuario.email, "username": usuario.username,
         "personal_id": usuario.personal_id, "empresa_id": usuario.empresa_id,
@@ -791,7 +887,7 @@ async def obtener_auth_id_por_personal(
     if not verificar_acceso_empresa(current_user, usuario.empresa_id):
         raise HTTPException(status_code=403, detail="No tiene acceso a este personal")
     
-    personal_data = obtener_datos_personal(db, personal_id)
+    personal_data = obtener_datos_personal_individual(db, personal_id)
     return {
         "usuario_id": usuario.id, "personal_id": usuario.personal_id, "email": usuario.email,
         "roles": personal_data["roles"] if personal_data else usuario.roles,
@@ -856,7 +952,7 @@ async def obtener_usuario_por_personal(
     if not verificar_acceso_empresa(current_user, usuario.empresa_id):
         raise HTTPException(status_code=403, detail="No tiene acceso a este personal")
     
-    personal_data = obtener_datos_personal(db, personal_id)
+    personal_data = obtener_datos_personal_individual(db, personal_id)
     return {
         "id": usuario.id, "email": usuario.email, "username": usuario.username,
         "personal_id": usuario.personal_id, "empresa_id": usuario.empresa_id,
