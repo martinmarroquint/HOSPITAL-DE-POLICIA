@@ -1,8 +1,8 @@
 # backend/app/api/v1/cartera.py
-# VERSIÓN FINAL COMPLETA
-from fastapi import APIRouter, Depends, UploadFile, File, Form, HTTPException
+# VERSIÓN FINAL - CON SELECTOR DE MES EN PORTAL PÚBLICO
+from fastapi import APIRouter, Depends, UploadFile, File, Form, HTTPException, Query
 from sqlalchemy.orm import Session
-from typing import List
+from typing import List, Optional
 from uuid import UUID
 from datetime import date, timedelta
 import os
@@ -20,15 +20,33 @@ UPLOAD_DIR = "uploads/cartera"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 
+def _get_semana(mes: Optional[int] = None, anio: Optional[int] = None):
+    """Calcula lunes y domingo de la semana actual o del mes indicado"""
+    hoy = date.today()
+    
+    if mes and anio:
+        # Buscar el primer día del mes que tenga programaciones
+        inicio_mes = date(anio, mes, 1)
+        fin_mes = date(anio, mes + 1, 1) if mes < 12 else date(anio + 1, 1, 1)
+        return inicio_mes, fin_mes
+    else:
+        lunes = hoy - timedelta(days=hoy.weekday())
+        domingo = lunes + timedelta(days=6)
+        return lunes, domingo
+
+
 # =====================================================
 # PORTAL PUBLICO
 # =====================================================
 
 @router.get("/especialidades", response_model=List[EspecialidadResponse])
-async def listar_especialidades(db: Session = Depends(get_db)):
-    hoy = date.today()
-    lunes = hoy - timedelta(days=hoy.weekday())
-    domingo = lunes + timedelta(days=6)
+async def listar_especialidades(
+    mes: Optional[int] = Query(None),
+    anio: Optional[int] = Query(None),
+    db: Session = Depends(get_db)
+):
+    """Lista especialidades con medicos disponibles. Si se especifica mes/anio, muestra todo el mes."""
+    inicio, fin = _get_semana(mes, anio)
     
     especialidades = db.query(Especialidad).filter(Especialidad.activo == True).all()
     
@@ -36,8 +54,8 @@ async def listar_especialidades(db: Session = Depends(get_db)):
     for esp in especialidades:
         count = db.query(Programacion.medico_dni).filter(
             Programacion.especialidad_id == esp.id,
-            Programacion.fecha >= lunes,
-            Programacion.fecha <= domingo
+            Programacion.fecha >= inicio,
+            Programacion.fecha <= fin
         ).distinct().count()
         
         if count > 0:
@@ -51,15 +69,19 @@ async def listar_especialidades(db: Session = Depends(get_db)):
 
 
 @router.get("/especialidades/{especialidad_id}/medicos", response_model=List[MedicoResponse])
-async def listar_medicos(especialidad_id: UUID, db: Session = Depends(get_db)):
-    hoy = date.today()
-    lunes = hoy - timedelta(days=hoy.weekday())
-    domingo = lunes + timedelta(days=6)
+async def listar_medicos(
+    especialidad_id: UUID,
+    mes: Optional[int] = Query(None),
+    anio: Optional[int] = Query(None),
+    db: Session = Depends(get_db)
+):
+    """Lista medicos de una especialidad con horarios. Si se especifica mes/anio, muestra todo el mes."""
+    inicio, fin = _get_semana(mes, anio)
     
     programaciones = db.query(Programacion).filter(
         Programacion.especialidad_id == especialidad_id,
-        Programacion.fecha >= lunes,
-        Programacion.fecha <= domingo
+        Programacion.fecha >= inicio,
+        Programacion.fecha <= fin
     ).order_by(Programacion.medico_nombre, Programacion.fecha).all()
     
     medicos = {}
@@ -156,7 +178,6 @@ async def guardar_programacion(
         especialidades_list = json.loads(especialidades)
         programaciones_list = json.loads(programaciones)
         
-        # ELIMINAR programaciones existentes del mes (reemplazo completo)
         inicio = date(anio, mes, 1)
         fin = date(anio, mes + 1, 1) if mes < 12 else date(anio + 1, 1, 1)
         
@@ -165,11 +186,9 @@ async def guardar_programacion(
             Programacion.fecha < fin
         ).delete()
         
-        # Crear registro de carga
         carga = CargaExcel(
             nombre_archivo=archivo.filename or "programacion.xlsx",
-            mes=mes,
-            anio=anio,
+            mes=mes, anio=anio,
             total_medicos=total_medicos,
             total_especialidades=total_especialidades,
             total_registros=total_registros,
@@ -180,7 +199,6 @@ async def guardar_programacion(
         db.add(carga)
         db.flush()
         
-        # Procesar especialidades
         esp_map = {}
         for nombre in especialidades_list:
             esp = db.query(Especialidad).filter(Especialidad.nombre == nombre).first()
@@ -190,7 +208,6 @@ async def guardar_programacion(
                 db.flush()
             esp_map[nombre] = esp.id
         
-        # Insertar nuevas programaciones
         count = 0
         for prog in programaciones_list:
             fecha_str = prog.get('fecha', '')
