@@ -276,6 +276,7 @@ async def get_registros_por_rango(
 async def registro_directo(
     personal_id: UUID = Body(...),
     tipo: str = Body(...),
+    metodo: str = Body("MANUAL"),  # NUEVO: método de registro (QR o MANUAL)
     empresa_id: Optional[UUID] = Body(None),
     db: Session = Depends(get_db),
     current_user: Usuario = Depends(require_roles(ROLES_REGISTRAR_ASISTENCIA))
@@ -289,6 +290,10 @@ async def registro_directo(
         
         if tipo not in ["ENTRADA", "SALIDA"]:
             raise HTTPException(status_code=400, detail="Tipo debe ser ENTRADA o SALIDA")
+        
+        # Validar método de registro
+        if metodo not in ["QR", "MANUAL"]:
+            metodo = "MANUAL"
         
         ahora_peru = get_peru_time()
         hoy = ahora_peru.date()
@@ -317,8 +322,11 @@ async def registro_directo(
             raise HTTPException(status_code=400, detail="Debe registrar ENTRADA primero")
         
         asistencia = Asistencia(
-            personal_id=personal_id, timestamp=ahora_peru, tipo=tipo,
-            tipo_registro="MANUAL", turno_codigo=turno_codigo,
+            personal_id=personal_id,
+            timestamp=ahora_peru,
+            tipo=tipo,
+            tipo_registro=metodo,  # CORREGIDO: QR cuando viene del escáner, MANUAL cuando es manual
+            turno_codigo=turno_codigo,
             created_by=current_user.id,
             empresa_id=current_user.empresa_id if current_user.empresa_id else None
         )
@@ -327,18 +335,24 @@ async def registro_directo(
         db.refresh(asistencia)
         
         tipo_persona = "Visitante" if es_visitante else "Trabajador"
-        logger.info(f"Registro directo ({tipo_persona}): {personal.nombre} - {tipo}")
+        metodo_str = "QR" if metodo == "QR" else "Manual"
+        logger.info(f"Registro {metodo_str} ({tipo_persona}): {personal.nombre} - {tipo}")
         
         return {
-            "success": True, "fecha": asistencia.timestamp.isoformat(),
-            "tipo": tipo, "tipo_persona": tipo_persona,
-            "personal_id": str(personal_id), "personal_nombre": personal.nombre,
+            "success": True,
+            "fecha": asistencia.timestamp.isoformat(),
+            "tipo": tipo,
+            "tipo_persona": tipo_persona,
+            "metodo": metodo,
+            "personal_id": str(personal_id),
+            "personal_nombre": personal.nombre,
             "turno": turno_codigo
         }
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Error en registro-directo: {str(e)}")
+        db.rollback()
         raise HTTPException(status_code=500, detail=f"Error al registrar asistencia: {str(e)}")
 
 @router.get("/personal/{personal_id}")
