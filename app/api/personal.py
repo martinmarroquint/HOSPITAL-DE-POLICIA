@@ -1,5 +1,5 @@
 # api/personal.py
-# VERSIÓN FINAL - JERARQUÍA RECURSIVA - CARGA MASIVA FUNCIONAL
+# VERSIÓN FINAL - JERARQUÍA RECURSIVA - CARGA MASIVA FUNCIONAL - ELIMINACIÓN CORREGIDA CON PRE_REGISTROS
 
 from fastapi import APIRouter, Depends, HTTPException, status, Query, UploadFile, File
 from fastapi.responses import StreamingResponse
@@ -26,6 +26,7 @@ from app.models.descanso_medico import DescansoMedico
 from app.models.solicitud_cambio import SolicitudCambio
 from app.models.empresa import Empresa
 from app.models.qr import QRRegistro
+from app.models.pre_registro import PreRegistro
 from app.schemas.personal import (
     PersonalCreate, PersonalUpdate, PersonalResponse, 
     CargaMasivaItem, CargaMasivaResponse,
@@ -1002,7 +1003,7 @@ async def carga_masiva_personal(
 # =====================================================
 
 def hash_password(password: str) -> str:
-    """Hash simple de contraseña (ajustar según tu sistema)"""
+    """Hash simple de contraseña"""
     import hashlib
     return hashlib.sha256(password.encode()).hexdigest()
 
@@ -1094,7 +1095,7 @@ async def habilitar_lote_usuarios(
 
 
 # =====================================================
-# ENDPOINTS DE RELACIONES Y ELIMINACIÓN
+# ENDPOINTS DE RELACIONES Y ELIMINACIÓN (CORREGIDOS CON PRE_REGISTROS)
 # =====================================================
 
 @router.get("/{id}/tiene-relaciones")
@@ -1103,6 +1104,10 @@ async def verificar_relaciones(
     db: Session = Depends(get_db),
     current_user: Usuario = Depends(require_roles(ROLES_ADMIN))
 ):
+    """
+    Verifica si un personal tiene datos relacionados que impidan su eliminación física.
+    Incluye verificación de pre_registros.
+    """
     personal = db.query(Personal).filter(Personal.id == id).first()
     if not personal:
         raise HTTPException(status_code=404, detail="Personal no encontrado")
@@ -1117,15 +1122,24 @@ async def verificar_relaciones(
         or_(SolicitudCambio.empleado_id == id, SolicitudCambio.empleado2_id == id)
     ).first() is not None
     tiene_usuario_auth = db.query(Usuario.id).filter(Usuario.personal_id == id).first() is not None
+    tiene_pre_registro = db.query(PreRegistro.id).filter(PreRegistro.personal_creado_id == id).first() is not None
     
     return {
-        "tiene_relaciones": tiene_planificacion or tiene_asistencia or tiene_dm or tiene_solicitudes or tiene_usuario_auth,
+        "tiene_relaciones": (
+            tiene_planificacion or 
+            tiene_asistencia or 
+            tiene_dm or 
+            tiene_solicitudes or 
+            tiene_usuario_auth or 
+            tiene_pre_registro
+        ),
         "detalles": {
             "planificacion": tiene_planificacion,
             "asistencia": tiene_asistencia,
             "descansos_medicos": tiene_dm,
             "solicitudes": tiene_solicitudes,
-            "usuario_auth": tiene_usuario_auth
+            "usuario_auth": tiene_usuario_auth,
+            "pre_registro": tiene_pre_registro
         }
     }
 
@@ -1136,6 +1150,11 @@ async def eliminar_personal_fisico(
     db: Session = Depends(get_db),
     current_user: Usuario = Depends(require_roles(ROLES_ADMIN))
 ):
+    """
+    Elimina FÍSICAMENTE un registro de personal.
+    SOLO se permite si NO tiene datos relacionados.
+    Limpia referencias en pre_registros y qr_registros antes de eliminar.
+    """
     personal = db.query(Personal).filter(Personal.id == id).first()
     if not personal:
         raise HTTPException(status_code=404, detail="Personal no encontrado")
@@ -1143,20 +1162,46 @@ async def eliminar_personal_fisico(
         if personal.empresa_id != current_user.empresa_id:
             raise HTTPException(status_code=403, detail="No tiene acceso a este personal")
     
-    if db.query(Planificacion.id).filter(Planificacion.personal_id == id).first() or \
-       db.query(Asistencia.id).filter(Asistencia.personal_id == id).first() or \
-       db.query(DescansoMedico.id).filter(DescansoMedico.paciente_id == id).first() or \
-       db.query(SolicitudCambio.id).filter(
-           or_(SolicitudCambio.empleado_id == id, SolicitudCambio.empleado2_id == id)
-       ).first() or \
-       db.query(Usuario.id).filter(Usuario.personal_id == id).first():
-        raise HTTPException(status_code=400, detail="No se puede eliminar físicamente. Use desactivación.")
+    # Verificar relaciones que impiden eliminación física
+    tiene_planificacion = db.query(Planificacion.id).filter(Planificacion.personal_id == id).first() is not None
+    tiene_asistencia = db.query(Asistencia.id).filter(Asistencia.personal_id == id).first() is not None
+    tiene_dm = db.query(DescansoMedico.id).filter(DescansoMedico.paciente_id == id).first() is not None
+    tiene_solicitudes = db.query(SolicitudCambio.id).filter(
+        or_(SolicitudCambio.empleado_id == id, SolicitudCambio.empleado2_id == id)
+    ).first() is not None
+    tiene_usuario_auth = db.query(Usuario.id).filter(Usuario.personal_id == id).first() is not None
     
+    if tiene_planificacion or tiene_asistencia or tiene_dm or tiene_solicitudes or tiene_usuario_auth:
+        raise HTTPException(
+            status_code=400, 
+            detail="No se puede eliminar físicamente porque tiene datos relacionados (asistencia, planificación, etc.). Use la opción de DESACTIVAR en su lugar."
+        )
+    
+    # Limpiar referencias antes de eliminar
+    # 1. Desvincular pre_registros que referencian a este personal
+    db.query(PreRegistro).filter(
+        PreRegistro.personal_creado_id == id
+    ).update(
+        {PreRegistro.personal_creado_id: None},
+        synchronize_session=False
+    )
+    
+    # 2. Eliminar QR registros asociados
     db.query(QRRegistro).filter(QRRegistro.empleado_id == id).delete()
+    
+    # 3. Eliminar el registro de personal
     db.delete(personal)
     db.commit()
+    
     clear_personal_cache()
-    return {"success": True, "message": "Usuario eliminado físicamente", "id": str(id)}
+    
+    logger.info(f"🗑️ Personal eliminado físicamente: {personal.nombre} (ID: {id})")
+    
+    return {
+        "success": True, 
+        "message": "Usuario eliminado físicamente", 
+        "id": str(id)
+    }
 
 
 @router.delete("/{id}")
@@ -1165,6 +1210,11 @@ async def desactivar_personal(
     db: Session = Depends(get_db),
     current_user: Usuario = Depends(require_roles(ROLES_PUEDEN_GESTIONAR_USUARIOS))
 ):
+    """
+    DESACTIVA un personal (soft delete).
+    El registro se conserva pero queda inactivo.
+    Esta es la opción RECOMENDADA para la mayoría de los casos.
+    """
     personal = db.query(Personal).filter(Personal.id == id).first()
     if not personal:
         raise HTTPException(status_code=404, detail="Personal no encontrado")
@@ -1175,7 +1225,15 @@ async def desactivar_personal(
     personal.activo = False
     db.commit()
     clear_personal_cache()
-    return {"success": True, "message": "Usuario desactivado", "id": str(id), "soft_delete": True}
+    
+    logger.info(f"🔒 Personal desactivado: {personal.nombre} (ID: {id})")
+    
+    return {
+        "success": True, 
+        "message": "Usuario desactivado correctamente", 
+        "id": str(id), 
+        "soft_delete": True
+    }
 
 
 @router.post("/{id}/restaurar", response_model=PersonalResponse)
@@ -1184,6 +1242,9 @@ async def restaurar_personal(
     db: Session = Depends(get_db),
     current_user: Usuario = Depends(require_roles(ROLES_PUEDEN_GESTIONAR_USUARIOS))
 ):
+    """
+    REACTIVA un personal previamente desactivado.
+    """
     personal = db.query(Personal).filter(Personal.id == id).first()
     if not personal:
         raise HTTPException(status_code=404, detail="Personal no encontrado")
@@ -1197,6 +1258,9 @@ async def restaurar_personal(
     db.commit()
     db.refresh(personal)
     clear_personal_cache()
+    
+    logger.info(f"🔓 Personal restaurado: {personal.nombre} (ID: {id})")
+    
     return personal
 
 
@@ -1207,6 +1271,9 @@ async def listar_inactivos(
     db: Session = Depends(get_db),
     current_user: Usuario = Depends(require_roles(ROLES_ADMIN))
 ):
+    """
+    Lista todos los registros de personal inactivos (desactivados).
+    """
     query = db.query(Personal).filter(Personal.activo == False)
     if current_user.empresa_id:
         query = query.filter(Personal.empresa_id == current_user.empresa_id)

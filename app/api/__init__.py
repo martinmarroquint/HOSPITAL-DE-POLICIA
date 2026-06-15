@@ -1,5 +1,5 @@
 # app/api/__init__.py
-# VERSIÓN ACTUALIZADA - CON BIOMETRÍA + CLIENTES, EMPRESAS, SESIONES, CARTERA Y CONFIGURACIÓN DINÁMICA
+# VERSIÓN ACTUALIZADA - CON BIOMETRÍA + CLIENTES, EMPRESAS, SESIONES, CARTERA, CONFIGURACIÓN DINÁMICA Y PRE-REGISTROS
 
 from fastapi import APIRouter
 from app.api import (
@@ -18,7 +18,8 @@ from app.api import (
     empresas,
     clientes,
     sesiones,
-    cartera,        # NUEVO - Cartera de Servicios Médicos
+    cartera,        # Cartera de Servicios Médicos
+    pre_registros,  # NUEVO - Pre-Registros de Personal
 )
 
 api_router = APIRouter()
@@ -68,6 +69,9 @@ api_router.include_router(sesiones.router, prefix="/sesiones", tags=["Sesiones"]
 # Cartera de Servicios Médicos (Portal Público + Carga Excel)
 api_router.include_router(cartera.router, prefix="/cartera", tags=["Cartera de Servicios"])
 
+# Pre-Registros de Personal (Formulario público + Admin)
+api_router.include_router(pre_registros.router, prefix="/pre-registro", tags=["Pre-Registros"])
+
 # ⚠️ configuracion_mensual se incluye directamente en main.py
 
 __all__ = [
@@ -86,6 +90,7 @@ __all__ = [
     'clientes',
     'empresas',
     'sesiones',
-    'cartera',       # NUEVO
+    'cartera',
+    'pre_registros',  # NUEVO
     'api_router'
 ]

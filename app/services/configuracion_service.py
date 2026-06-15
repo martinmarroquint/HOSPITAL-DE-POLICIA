@@ -3,6 +3,7 @@ Servicio de Configuración Dinámica
 Lógica de negocio para la configuración del sistema
 CORREGIDO: guardar_niveles ahora actualiza sin borrar unidades asociadas
            guardar_campos_personal convierte tipos a minúsculas
+           get_campos_personal y guardar_campos_personal manejan empresa_id=None
 """
 
 from sqlalchemy.orm import Session
@@ -309,60 +310,86 @@ class ConfiguracionService:
         return True
     
     # =====================================================
-    # CAMPOS DEL PERSONAL (CORREGIDO - CONVERSIÓN A MINÚSCULAS)
+    # CAMPOS DEL PERSONAL (CORREGIDO - MANEJA empresa_id=None)
     # =====================================================
     
     def get_campos_personal(self, empresa_id: Optional[UUID] = None) -> List[ConfigCampoPersonal]:
-        """Obtiene campos del personal filtrados por empresa_id"""
+        """
+        Obtiene campos del personal filtrados por empresa_id.
+        Si empresa_id es None, solo devuelve campos del sistema (sin empresa).
+        """
         query = self.db.query(ConfigCampoPersonal)
         if empresa_id:
+            # Campos de la empresa + campos del sistema (empresa_id=NULL)
             query = query.filter(
                 (ConfigCampoPersonal.empresa_id == empresa_id) | 
                 (ConfigCampoPersonal.empresa_id == None)
             )
+        else:
+            # Sin empresa_id, solo devolver campos del sistema
+            query = query.filter(ConfigCampoPersonal.empresa_id == None)
         return query.order_by(ConfigCampoPersonal.orden).all()
     
     def guardar_campos_personal(self, campos_data: List[Dict[str, Any]], empresa_id: Optional[UUID] = None) -> List[ConfigCampoPersonal]:
-        """Guarda los campos del personal para una empresa especifica"""
+        """
+        Guarda los campos del personal para una empresa especifica.
+        Si empresa_id es None, no realiza cambios (solo lectura).
+        """
+        # Validar que haya empresa_id para operaciones de escritura
+        if not empresa_id:
+            logger.warning("Intento de guardar campos sin empresa_id - Operación ignorada")
+            return []
+        
         # Eliminar existentes no-sistema de esta empresa
-        query = self.db.query(ConfigCampoPersonal).filter(ConfigCampoPersonal.sistema == False)
-        if empresa_id:
-            query = query.filter(ConfigCampoPersonal.empresa_id == empresa_id)
-        query.delete()
+        self.db.query(ConfigCampoPersonal).filter(
+            ConfigCampoPersonal.sistema == False,
+            ConfigCampoPersonal.empresa_id == empresa_id
+        ).delete()
+        self.db.flush()
         
         creados = []
         for data in campos_data:
             campo_id = data.get("campo_id")
             
-            # 🎯 CORRECCIÓN: Convertir tipo a minúsculas para cumplir con CHECK constraint
+            # Convertir tipo a minúsculas para cumplir con CHECK constraint
             if data.get("tipo"):
-                data["tipo"] = data["tipo"].lower()
+                data["tipo"] = data["tipo"].upper()
             
-            # Buscar existente
-            existente_query = self.db.query(ConfigCampoPersonal).filter(
-                ConfigCampoPersonal.campo_id == campo_id
-            )
-            if empresa_id:
-                existente_query = existente_query.filter(
-                    (ConfigCampoPersonal.empresa_id == empresa_id) | 
-                    (ConfigCampoPersonal.empresa_id == None)
-                )
-            existente = existente_query.first()
+            # Buscar existente por campo_id Y empresa_id
+            existente = self.db.query(ConfigCampoPersonal).filter(
+                ConfigCampoPersonal.campo_id == campo_id,
+                ConfigCampoPersonal.empresa_id == empresa_id
+            ).first()
             
             if existente:
-                # Si ya existe, actualizar sus campos
+                # Actualizar campo existente
                 for key, value in data.items():
                     if hasattr(existente, key) and key not in ['id', 'empresa_id', 'created_at']:
                         setattr(existente, key, value)
                 existente.empresa_id = empresa_id
                 creados.append(existente)
             else:
-                # Si no existe, crear nuevo
-                data_copy = {k: v for k, v in data.items() if k not in ['id', 'created_at']}
-                data_copy['empresa_id'] = empresa_id
-                campo = ConfigCampoPersonal(**data_copy)
-                self.db.add(campo)
-                creados.append(campo)
+                # Verificar si existe como campo del sistema (sin empresa)
+                sistema_existente = self.db.query(ConfigCampoPersonal).filter(
+                    ConfigCampoPersonal.campo_id == campo_id,
+                    ConfigCampoPersonal.sistema == True,
+                    ConfigCampoPersonal.empresa_id == None
+                ).first()
+                
+                if sistema_existente:
+                    # Actualizar el campo del sistema con los nuevos valores
+                    for key, value in data.items():
+                        if hasattr(sistema_existente, key) and key not in ['id', 'empresa_id', 'created_at']:
+                            setattr(sistema_existente, key, value)
+                    creados.append(sistema_existente)
+                else:
+                    # Crear nuevo campo
+                    data_copy = {k: v for k, v in data.items() if k not in ['id', 'created_at']}
+                    data_copy['empresa_id'] = empresa_id
+                    data_copy.setdefault('sistema', False)
+                    campo = ConfigCampoPersonal(**data_copy)
+                    self.db.add(campo)
+                    creados.append(campo)
         
         self.db.commit()
         logger.info(f"{len(creados)} campos de personal guardados para empresa {empresa_id}")
