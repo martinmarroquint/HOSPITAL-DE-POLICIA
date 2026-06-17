@@ -1,5 +1,5 @@
 # api/planificacion.py
-# VERSION COMPLETA - SOPORTE MULTI-JEFATURA + ROLES + METAS + ROTACIONES
+# VERSION COMPLETA - SOPORTE MULTI-JEFATURA CORREGIDO + ROLES + METAS + ROTACIONES
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from sqlalchemy.orm import Session, joinedload
@@ -1092,7 +1092,7 @@ async def eliminar_observacion(
 
 
 # =====================================================
-# BORRADOR Y ENVIO A REVISION
+# 🆕 BORRADOR Y ENVIO A REVISION - CORREGIDO MULTI-JEFATURA
 # =====================================================
 
 @router.post("/area/borrador")
@@ -1106,12 +1106,20 @@ async def guardar_borrador_area(
 ):
     """Guarda el borrador de planificacion de un area."""
     try:
-        jefe = db.query(Personal.id, Personal.area).filter(
+        jefe = db.query(Personal).filter(
             Personal.id == current_user.personal_id
         ).first()
         
-        if not jefe or jefe.area != area:
-            raise HTTPException(status_code=403, detail="No eres jefe de esta area")
+        if not jefe:
+            raise HTTPException(status_code=403, detail="Jefe no encontrado")
+        
+        areas_jefatura = get_areas_jefatura(db, current_user.personal_id)
+        
+        if area not in areas_jefatura:
+            raise HTTPException(
+                status_code=403, 
+                detail=f"No eres jefe de esta area. Tus areas de jefatura son: {areas_jefatura}"
+            )
         
         if mes < 1 or mes > 12:
             raise HTTPException(status_code=400, detail="Mes invalido")
@@ -1129,6 +1137,8 @@ async def guardar_borrador_area(
         if solicitud_existente:
             solicitud_existente.turno_original = datos_array
             solicitud_existente.estado = "borrador"
+            # 🆕 Guardar el área en el motivo para referencia
+            solicitud_existente.motivo = f"ENVIO_MENSUAL - {area}"
             if hasattr(solicitud_existente, 'updated_at'):
                 solicitud_existente.updated_at = datetime.utcnow()
             if not solicitud_existente.historial:
@@ -1138,6 +1148,7 @@ async def guardar_borrador_area(
                 "usuario": str(current_user.id),
                 "accion": "actualizacion_borrador",
                 "estado": "borrador",
+                "area": area,  # 🆕 Guardar área en historial
                 "registros": len(datos_array)
             })
             db.commit()
@@ -1152,7 +1163,7 @@ async def guardar_borrador_area(
                 tipo="planificacion_mensual",
                 estado="borrador",
                 fecha_cambio=fecha_referencia,
-                motivo="ENVIO_MENSUAL",
+                motivo=f"ENVIO_MENSUAL - {area}",  # 🆕 Incluir área en el motivo
                 empleado_id=current_user.personal_id,
                 turno_original=datos_array,
                 historial=[{
@@ -1160,6 +1171,7 @@ async def guardar_borrador_area(
                     "usuario": str(current_user.id),
                     "accion": "creacion_borrador",
                     "estado": "borrador",
+                    "area": area,  # 🆕 Guardar área en historial
                     "registros": len(datos_array)
                 }],
                 created_by=current_user.id
@@ -1192,10 +1204,20 @@ async def enviar_planificacion_revision(
 ):
     """Envia la planificacion de un area a revision."""
     try:
-        jefe = db.query(Personal).filter(Personal.id == current_user.personal_id).first()
+        jefe = db.query(Personal).filter(
+            Personal.id == current_user.personal_id
+        ).first()
         
-        if not jefe or jefe.area != area:
-            raise HTTPException(status_code=403, detail="No eres jefe de esta area")
+        if not jefe:
+            raise HTTPException(status_code=403, detail="Jefe no encontrado")
+        
+        areas_jefatura = get_areas_jefatura(db, current_user.personal_id)
+        
+        if area not in areas_jefatura:
+            raise HTTPException(
+                status_code=403, 
+                detail=f"No eres jefe de esta area. Tus areas de jefatura son: {areas_jefatura}"
+            )
         
         fecha_referencia = date(anio, mes, 1)
         
@@ -1210,13 +1232,17 @@ async def enviar_planificacion_revision(
             raise HTTPException(status_code=404, detail="No hay borrador para enviar")
         
         solicitud.estado = "pendiente"
+        # 🆕 Asegurar que el motivo tenga el área
+        if "ENVIO_MENSUAL" in (solicitud.motivo or "") and area not in (solicitud.motivo or ""):
+            solicitud.motivo = f"ENVIO_MENSUAL - {area}"
         if not solicitud.historial:
             solicitud.historial = []
         solicitud.historial.append({
             "fecha": datetime.utcnow().isoformat(),
             "usuario": str(current_user.id),
             "accion": "envio_a_revision",
-            "estado": "pendiente"
+            "estado": "pendiente",
+            "area": area  # 🆕 Guardar área en historial
         })
         db.commit()
         

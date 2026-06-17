@@ -404,17 +404,65 @@ async def listar_todas_solicitudes(
     db: Session = Depends(get_db),
     current_user = Depends(require_roles(["admin", "jefe_area", "jefe_direccion", "jefe_grupo", "jefe_departamento", "recursos_humanos", "oficina_central"]))
 ):
-    """
-    Lista TODAS las solicitudes (pendientes, aprobadas, rechazadas)
-    Solo para administradores y jefes
-    """
+    """Lista TODAS las solicitudes"""
     try:
         solicitudes = db.query(SolicitudCambio).options(
             joinedload(SolicitudCambio.empleado_rel),
             joinedload(SolicitudCambio.empleado2_rel)
         ).order_by(SolicitudCambio.created_at.desc()).all()
         
-        return [formatear_solicitud(s) for s in solicitudes]
+        result = []
+        for s in solicitudes:
+            solicitud_dict = formatear_solicitud(s)
+            
+            # Para planificaciones mensuales, extraer área real (igual que pendientes)
+            if s.tipo == "planificacion_mensual":
+                area_real = None
+                jefe_nombre = None
+                
+                # 1. Buscar en historial
+                if s.historial:
+                    for h in s.historial:
+                        if h.get("area"):
+                            area_real = h["area"]
+                            break
+                
+                # 2. Extraer del motivo
+                if not area_real and s.motivo and "ENVIO_MENSUAL - " in s.motivo:
+                    area_real = s.motivo.replace("ENVIO_MENSUAL - ", "").strip()
+                
+                # 3. Buscar en areas_que_jefatura
+                if not area_real and s.empleado_rel:
+                    jefe = s.empleado_rel
+                    jefe_nombre = jefe.nombre
+                    if jefe.areas_que_jefatura:
+                        for item in jefe.areas_que_jefatura:
+                            if isinstance(item, str) and ':' in item:
+                                area_candidata = item.split(':', 1)[1].strip()
+                                if area_candidata != jefe.area:
+                                    area_real = area_candidata
+                                    break
+                
+                # 4. Fallback
+                if not area_real and s.empleado_rel:
+                    area_real = s.empleado_rel.area
+                if not jefe_nombre and s.empleado_rel:
+                    jefe_nombre = s.empleado_rel.nombre
+                
+                # Sobrescribir campos
+                solicitud_dict["area_nombre"] = area_real
+                solicitud_dict["area"] = area_real
+                solicitud_dict["jefe_nombre"] = jefe_nombre
+                solicitud_dict["empleado_nombre"] = jefe_nombre
+                solicitud_dict["mes"] = s.fecha_cambio.month if s.fecha_cambio else None
+                solicitud_dict["anio"] = s.fecha_cambio.year if s.fecha_cambio else None
+                solicitud_dict["total_turnos"] = len(s.turno_original) if isinstance(s.turno_original, list) else 0
+                solicitud_dict["datos"] = s.turno_original if isinstance(s.turno_original, list) else []
+                solicitud_dict["fecha"] = s.fecha_cambio.isoformat() if s.fecha_cambio else None
+            
+            result.append(solicitud_dict)
+        
+        return result
         
     except Exception as e:
         logger.error(f"Error en listar_todas_solicitudes: {e}")
@@ -587,17 +635,66 @@ async def listar_planificaciones_pendientes(
         
         result = []
         for s in solicitudes:
+            # 🆕 Obtener el área REAL de la jefatura (no del empleado)
+            area_real = None
+            jefe_nombre = None
+            
+            # 1. Buscar en el historial
+            if s.historial:
+                for h in s.historial:
+                    if h.get("area"):
+                        area_real = h["area"]
+                        break
+            
+            # 2. Extraer del motivo: "ENVIO_MENSUAL - AREA DE RECURSOS HUMANOS"
+            if not area_real and s.motivo and "ENVIO_MENSUAL - " in s.motivo:
+                area_real = s.motivo.replace("ENVIO_MENSUAL - ", "").strip()
+            
+            # 3. Buscar en areas_que_jefatura del jefe
+            if not area_real and s.empleado_rel:
+                jefe = s.empleado_rel
+                jefe_nombre = jefe.nombre
+                if jefe.areas_que_jefatura:
+                    for item in jefe.areas_que_jefatura:
+                        if isinstance(item, str):
+                            if ':' in item:
+                                area_candidata = item.split(':', 1)[1].strip()
+                                # Tomar la primera área que NO sea el área de trabajo
+                                if area_candidata != jefe.area:
+                                    area_real = area_candidata
+                                    break
+            
+            # 4. Fallback: área del empleado
+            if not area_real and s.empleado_rel:
+                area_real = s.empleado_rel.area
+            
+            if not jefe_nombre and s.empleado_rel:
+                jefe_nombre = s.empleado_rel.nombre
+            
+            # Contar turnos
+            total_turnos = len(s.turno_original) if isinstance(s.turno_original, list) else 0
+            
+            # Extraer mes y año
+            mes = s.fecha_cambio.month if s.fecha_cambio else None
+            anio = s.fecha_cambio.year if s.fecha_cambio else None
+            
             result.append({
                 "id": str(s.id),
                 "tipo": s.tipo,
                 "estado": s.estado,
                 "fecha_solicitud": s.fecha_solicitud.isoformat() if s.fecha_solicitud else None,
                 "fecha_cambio": s.fecha_cambio.isoformat() if s.fecha_cambio else None,
+                "fecha": s.fecha_cambio.isoformat() if s.fecha_cambio else None,
                 "motivo": s.motivo,
                 "empleado_id": str(s.empleado_id) if s.empleado_id else None,
-                "empleado_nombre": s.empleado_rel.nombre if s.empleado_rel else None,
+                "jefe_nombre": jefe_nombre,
+                "empleado_nombre": jefe_nombre,
                 "empleado_grado": s.empleado_rel.grado if s.empleado_rel else None,
-                "area_nombre": s.empleado_rel.area if s.empleado_rel else None,
+                "area_nombre": area_real,
+                "area": area_real,
+                "mes": mes,
+                "anio": anio,
+                "total_turnos": total_turnos,
                 "datos": s.turno_original,
                 "comentario_revision": s.comentario_revision,
                 "historial": s.historial
