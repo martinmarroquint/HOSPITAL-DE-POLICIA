@@ -1,5 +1,5 @@
 # app/api/__init__.py
-# VERSIÓN ACTUALIZADA - CON BIOMETRÍA + CLIENTES, EMPRESAS, SESIONES, CARTERA, CONFIGURACIÓN DINÁMICA Y PRE-REGISTROS
+# VERSIÓN ACTUALIZADA - CON BIOMETRÍA + CLIENTES, EMPRESAS, SESIONES, CARTERA, CONFIGURACIÓN DINÁMICA, PRE-REGISTROS Y GEOLOCALIZACIÓN
 
 from fastapi import APIRouter
 from app.api import (
@@ -19,7 +19,8 @@ from app.api import (
     clientes,
     sesiones,
     cartera,        # Cartera de Servicios Médicos
-    pre_registros,  # NUEVO - Pre-Registros de Personal
+    pre_registros,  # Pre-Registros de Personal
+    geolocalizacion, # Geolocalización GPS
 )
 
 api_router = APIRouter()
@@ -72,6 +73,9 @@ api_router.include_router(cartera.router, prefix="/cartera", tags=["Cartera de S
 # Pre-Registros de Personal (Formulario público + Admin)
 api_router.include_router(pre_registros.router, prefix="/pre-registro", tags=["Pre-Registros"])
 
+# CORREGIDO: Geolocalización GPS - SIN prefijo adicional (api_router ya se monta con /api/v1 en main.py)
+api_router.include_router(geolocalizacion.router, tags=["Geolocalización"])
+
 # ⚠️ configuracion_mensual se incluye directamente en main.py
 
 __all__ = [
@@ -91,6 +95,7 @@ __all__ = [
     'empresas',
     'sesiones',
     'cartera',
-    'pre_registros',  # NUEVO
+    'pre_registros',
+    'geolocalizacion',
     'api_router'
 ]

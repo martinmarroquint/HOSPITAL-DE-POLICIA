@@ -1,8 +1,10 @@
+# app/api/configuracion.py
 """
 API de Configuración Dinámica
 Endpoints para gestionar la configuración del sistema
 CADA EMPRESA TIENE SU PROPIA CONFIGURACIÓN
 CORREGIDO: Conversión de tipos a minúsculas en guardar_campos_personal
+INCLUYE: Geolocalización GPS - Configuración de sedes y parámetros
 """
 
 from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File
@@ -18,6 +20,7 @@ from app.services.configuracion_service import ConfiguracionService
 from app.models.configuracion import ConfigCliente
 from app.models.usuario import Usuario
 from app.models.empresa import Empresa
+from app.models.geolocalizacion import Sede, ConfigGeolocalizacion
 from app.schemas.configuracion import (
     TurnoCreate, TurnoUpdate, TurnoResponse,
     ReglaCreate, ReglaResponse,
@@ -29,6 +32,10 @@ from app.schemas.configuracion import (
     CatalogoCreate, CatalogoResponse,
     EstadoConfigResponse,
     ClienteConfigUpdate, ClienteConfigResponse,
+)
+from app.schemas.geolocalizacion import (
+    SedeCreate, SedeUpdate, SedeResponse,
+    ConfigGeolocalizacionUpdate
 )
 
 router = APIRouter()
@@ -637,4 +644,208 @@ async def get_config_cliente_publico(
         "color_fondo": "#F1F5F9",
         "color_texto": "#1A202C",
         "pie_pagina": "Sistema de Gestión de Personal"
+    }
+
+
+# =====================================================
+# GEOLOCALIZACIÓN - CONFIGURACIÓN GPS Y SEDES
+# =====================================================
+
+def get_or_create_config_geo(db: Session, empresa_id: UUID) -> ConfigGeolocalizacion:
+    """Obtiene o crea la configuración de geolocalización para una empresa"""
+    config = db.query(ConfigGeolocalizacion).filter(
+        ConfigGeolocalizacion.empresa_id == empresa_id
+    ).first()
+    
+    if not config:
+        config = ConfigGeolocalizacion(
+            empresa_id=empresa_id,
+            activo=False,
+            radio_tolerancia_default=50,
+            precision_minima=100
+        )
+        db.add(config)
+        db.commit()
+        db.refresh(config)
+    
+    return config
+
+
+@router.get("/geolocalizacion", tags=["Geolocalización"])
+async def get_config_geolocalizacion(
+    db: Session = Depends(get_db),
+    current_user: Usuario = Depends(get_current_active_user)
+):
+    """Obtiene la configuración de geolocalización de la empresa"""
+    if not current_user.empresa_id:
+        return {
+            "activo": False,
+            "radio_tolerancia_default": 50,
+            "precision_minima": 100,
+            "exigir_alta_precision": False,
+            "permitir_sin_gps": False,
+            "mostrar_distancia": True
+        }
+    
+    config = get_or_create_config_geo(db, current_user.empresa_id)
+    
+    return {
+        "id": str(config.id),
+        "activo": config.activo,
+        "radio_tolerancia_default": config.radio_tolerancia_default,
+        "precision_minima": config.precision_minima,
+        "exigir_alta_precision": config.exigir_alta_precision,
+        "permitir_sin_gps": config.permitir_sin_gps,
+        "mostrar_distancia": config.mostrar_distancia
+    }
+
+
+@router.put("/geolocalizacion", tags=["Geolocalización"])
+async def update_config_geolocalizacion(
+    data: ConfigGeolocalizacionUpdate,
+    db: Session = Depends(get_db),
+    current_user: Usuario = Depends(require_roles(ROLES_ADMIN))
+):
+    """Actualiza la configuración de geolocalización"""
+    if not current_user.empresa_id:
+        raise HTTPException(status_code=400, detail="Usuario sin empresa asignada")
+    
+    config = get_or_create_config_geo(db, current_user.empresa_id)
+    
+    update_data = data.model_dump(exclude_unset=True)
+    for key, value in update_data.items():
+        setattr(config, key, value)
+    
+    db.commit()
+    db.refresh(config)
+    
+    return {
+        "success": True,
+        "message": "Configuración de geolocalización actualizada",
+        "config": {
+            "activo": config.activo,
+            "radio_tolerancia_default": config.radio_tolerancia_default,
+            "precision_minima": config.precision_minima
+        }
+    }
+
+
+# =====================================================
+# SEDES - CRUD PARA GEOLOCALIZACIÓN
+# =====================================================
+
+@router.get("/sedes", response_model=List[SedeResponse], tags=["Geolocalización"])
+async def listar_sedes(
+    incluir_inactivas: bool = Query(False),
+    db: Session = Depends(get_db),
+    current_user: Usuario = Depends(get_current_active_user)
+):
+    """Lista las sedes autorizadas de la empresa"""
+    query = db.query(Sede)
+    
+    if current_user.empresa_id:
+        query = query.filter(Sede.empresa_id == current_user.empresa_id)
+    
+    if not incluir_inactivas:
+        query = query.filter(Sede.activo == True)
+    
+    sedes = query.order_by(Sede.nombre).all()
+    
+    return [
+        {
+            "id": str(s.id),
+            "nombre": s.nombre,
+            "descripcion": s.descripcion,
+            "latitud": s.latitud,
+            "longitud": s.longitud,
+            "radio_permitido": s.radio_permitido,
+            "activo": s.activo
+        }
+        for s in sedes
+    ]
+
+
+@router.post("/sedes", status_code=201, tags=["Geolocalización"])
+async def crear_sede(
+    data: SedeCreate,
+    db: Session = Depends(get_db),
+    current_user: Usuario = Depends(require_roles(ROLES_ADMIN))
+):
+    """Crea una nueva sede autorizada"""
+    if not current_user.empresa_id:
+        raise HTTPException(status_code=400, detail="Usuario sin empresa asignada")
+    
+    sede = Sede(
+        empresa_id=current_user.empresa_id,
+        nombre=data.nombre,
+        descripcion=data.descripcion,
+        latitud=data.latitud,
+        longitud=data.longitud,
+        radio_permitido=data.radio_permitido
+    )
+    db.add(sede)
+    db.commit()
+    db.refresh(sede)
+    
+    return {
+        "success": True,
+        "message": "Sede creada correctamente",
+        "sede": {
+            "id": str(sede.id),
+            "nombre": sede.nombre,
+            "latitud": sede.latitud,
+            "longitud": sede.longitud,
+            "radio_permitido": sede.radio_permitido
+        }
+    }
+
+
+@router.put("/sedes/{sede_id}", tags=["Geolocalización"])
+async def actualizar_sede(
+    sede_id: UUID,
+    data: SedeUpdate,
+    db: Session = Depends(get_db),
+    current_user: Usuario = Depends(require_roles(ROLES_ADMIN))
+):
+    """Actualiza una sede existente"""
+    sede = db.query(Sede).filter(Sede.id == sede_id).first()
+    if not sede:
+        raise HTTPException(status_code=404, detail="Sede no encontrada")
+    
+    if current_user.empresa_id and sede.empresa_id != current_user.empresa_id:
+        raise HTTPException(status_code=403, detail="No tiene permiso para modificar esta sede")
+    
+    update_data = data.model_dump(exclude_unset=True)
+    for key, value in update_data.items():
+        setattr(sede, key, value)
+    
+    db.commit()
+    db.refresh(sede)
+    
+    return {
+        "success": True,
+        "message": "Sede actualizada correctamente"
+    }
+
+
+@router.delete("/sedes/{sede_id}", tags=["Geolocalización"])
+async def eliminar_sede(
+    sede_id: UUID,
+    db: Session = Depends(get_db),
+    current_user: Usuario = Depends(require_roles(ROLES_ADMIN))
+):
+    """Desactiva una sede (soft delete)"""
+    sede = db.query(Sede).filter(Sede.id == sede_id).first()
+    if not sede:
+        raise HTTPException(status_code=404, detail="Sede no encontrada")
+    
+    if current_user.empresa_id and sede.empresa_id != current_user.empresa_id:
+        raise HTTPException(status_code=403, detail="No tiene permiso para eliminar esta sede")
+    
+    sede.activo = False
+    db.commit()
+    
+    return {
+        "success": True,
+        "message": "Sede desactivada correctamente"
     }

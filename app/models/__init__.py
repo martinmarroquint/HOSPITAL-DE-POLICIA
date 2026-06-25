@@ -1,5 +1,5 @@
 # app/models/__init__.py
-# VERSION ACTUALIZADA - CON BIOMETRÍA + METAS + ROTACIONES + CARTERA + PRE-REGISTROS
+# VERSION ACTUALIZADA - CON BIOMETRÍA + METAS + ROTACIONES + CARTERA + PRE-REGISTROS + GEOLOCALIZACIÓN
 
 from app.models.usuario import Usuario
 from app.models.personal import Personal
@@ -21,10 +21,13 @@ from app.models.notificacion import Notificacion
 from app.models.meta_cumplimiento import MetaCumplimiento
 from app.models.rotacion import Rotacion
 from app.models.biometric import BiometricCredential
-from app.models.pre_registro import PreRegistro  # ← NUEVO
+from app.models.pre_registro import PreRegistro
 
 # Cartera de Servicios Médicos
 from app.models.cartera import Especialidad, Programacion, CargaExcel
+
+# NUEVO - Geolocalización GPS
+from app.models.geolocalizacion import Sede, ConfigGeolocalizacion, RegistroGeolocalizacion
 
 # Configuracion dinamica
 from app.models.configuracion import (
@@ -53,7 +56,7 @@ __all__ = [
     # USUARIOS Y PERSONAL
     "Usuario",
     "Personal",
-    "PreRegistro",  # ← NUEVO
+    "PreRegistro",
     
     # PLANIFICACION
     "Planificacion",
@@ -70,6 +73,11 @@ __all__ = [
     "Asistencia",
     "JustificacionAsistencia",
     "QRRegistro",
+    
+    # NUEVO - GEOLOCALIZACIÓN GPS
+    "Sede",
+    "ConfigGeolocalizacion",
+    "RegistroGeolocalizacion",
     
     # SALUD
     "DescansoMedico",

@@ -1,5 +1,5 @@
 # app/main.py
-# VERSIÓN ACTUALIZADA - CON CARTERA DE SERVICIOS MÉDICOS
+# VERSIÓN ACTUALIZADA - CON CARTERA DE SERVICIOS MÉDICOS + GEOLOCALIZACIÓN GPS
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -73,6 +73,8 @@ app = FastAPI(
         {"name": "Empresas", "description": "Panel Super Admin / Admin Cliente - Gestión de empresas"},
         {"name": "Sesiones", "description": "Gestión de sesiones, clases y eventos"},
         {"name": "Cartera de Servicios", "description": "Portal público de cartera médica y carga de Excel"},
+        {"name": "Pre-Registros", "description": "Pre-Registros de Personal - Formulario público + Admin"},
+        {"name": "Geolocalización", "description": "Registro de asistencia por GPS con validación de coordenadas"},
         {"name": "Sistema", "description": "Endpoints de sistema y monitoreo"}
     ]
 )
@@ -158,7 +160,9 @@ modulos_existentes = [
     'descansos_medicos', 'solicitudes_cambio', 'qr', 'configuracion_mensual',
     'publicaciones', 'notificaciones', 'configuracion',
     'clientes', 'empresas', 'sesiones',
-    'cartera_servicios'  # NUEVO MÓDULO
+    'cartera_servicios',  # Cartera de Servicios Médicos
+    'pre_registros',      # Pre-Registros de Personal
+    'geolocalizacion'     # NUEVO - Geolocalización GPS
 ]
 
 logger.info(f"✅ Módulos cargados: {', '.join(modulos_existentes)}")
@@ -218,6 +222,8 @@ async def system_info():
         "modulos": modulos_existentes,
         "biometria": "Disponible",
         "cartera_servicios": "Disponible",
+        "pre_registros": "Disponible",
+        "geolocalizacion": "Disponible",  # NUEVO
         "timestamp": datetime.utcnow().isoformat()
     }
 
@@ -261,6 +267,8 @@ async def startup_event():
     logger.info(f"👥 Jerarquía: super_admin → admin_cliente → admin_empresa → jefe_unidad → usuario")
     logger.info(f"🔐 Biometría: DISPONIBLE")
     logger.info(f"🏥 Cartera de Servicios: DISPONIBLE")
+    logger.info(f"📍 Geolocalización GPS: DISPONIBLE")  # NUEVO
+    logger.info(f"📝 Pre-Registros: DISPONIBLE")
     logger.info("=" * 60)
     await startup_db_events()
     db_connected, _ = check_db_connection()
