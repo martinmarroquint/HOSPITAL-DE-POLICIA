@@ -1,6 +1,7 @@
 """
 Schemas Pydantic para Configuración Dinámica
 CON SOPORTE MULTI-EMPRESA
+INCLUYE: sede_id en UnidadResponse para geolocalización
 """
 
 from pydantic import BaseModel, Field, validator
@@ -139,6 +140,7 @@ class UnidadBase(BaseModel):
     codigo: Optional[str] = None
     padre_id: Optional[UUID] = None
     nivel_id: Optional[UUID] = None
+    sede_id: Optional[UUID] = None
     orden: Optional[int] = 0
     metadata_extra: Optional[Dict[str, Any]] = {}
 
@@ -152,6 +154,7 @@ class UnidadUpdate(BaseModel):
     codigo: Optional[str] = None
     padre_id: Optional[UUID] = None
     nivel_id: Optional[UUID] = None
+    sede_id: Optional[UUID] = None
     orden: Optional[int] = None
     activo: Optional[bool] = None
     metadata_extra: Optional[Dict[str, Any]] = None
@@ -160,6 +163,7 @@ class UnidadUpdate(BaseModel):
 class UnidadResponse(UnidadBase):
     id: UUID
     empresa_id: Optional[UUID] = None
+    sede_id: Optional[UUID] = None
     activo: Optional[bool] = True
     created_at: Optional[datetime] = None
 

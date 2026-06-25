@@ -15,6 +15,7 @@ from app.core.dependencies import require_roles, get_current_user
 from app.models.personal import Personal
 from app.models.usuario import Usuario
 from app.models.asistencia import Asistencia
+from app.models.configuracion import ConfigUnidad
 from app.models.geolocalizacion import Sede, ConfigGeolocalizacion, RegistroGeolocalizacion
 from app.schemas.geolocalizacion import (
     GeolocalizacionRequest,
@@ -77,7 +78,6 @@ async def obtener_config_geolocalizacion(
     """
     try:
         if not current_user.empresa_id:
-            # Si no tiene empresa, devolver configuración por defecto
             return {
                 "activo": False,
                 "radio_tolerancia_default": 50,
@@ -92,7 +92,6 @@ async def obtener_config_geolocalizacion(
         ).first()
         
         if not config:
-            # Crear configuración por defecto
             config = ConfigGeolocalizacion(
                 empresa_id=current_user.empresa_id,
                 activo=False,
@@ -139,7 +138,6 @@ async def actualizar_config_geolocalizacion(
             config = ConfigGeolocalizacion(empresa_id=current_user.empresa_id)
             db.add(config)
         
-        # Actualizar campos
         update_data = data.model_dump(exclude_unset=True)
         for key, value in update_data.items():
             setattr(config, key, value)
@@ -322,7 +320,8 @@ async def registrar_por_geolocalizacion(
     current_user = Depends(require_roles(ROLES_GEOLOCALIZACION))
 ):
     """
-    Registra asistencia validando coordenadas GPS
+    Registra asistencia validando coordenadas GPS.
+    Verifica que el usuario esté dentro del radio de la sede asignada a su área.
     """
     try:
         # Verificar que el usuario tenga personal asociado
@@ -349,11 +348,43 @@ async def registrar_por_geolocalizacion(
                 mensaje=f"Precisión GPS insuficiente ({data.precision:.0f}m). Máxima aceptable: {precision_maxima}m"
             )
         
+        # 🆕 Validar que el área del usuario tenga una sede asignada
+        sede_asignada = None
+        if personal.area:
+            unidad_usuario = db.query(ConfigUnidad).filter(
+                ConfigUnidad.nombre == personal.area,
+                ConfigUnidad.activo == True,
+                ConfigUnidad.empresa_id == current_user.empresa_id
+            ).first()
+            
+            if unidad_usuario and unidad_usuario.sede_id:
+                sede_asignada = db.query(Sede).filter(
+                    Sede.id == unidad_usuario.sede_id,
+                    Sede.activo == True
+                ).first()
+                
+                if not sede_asignada:
+                    return GeolocalizacionResponse(
+                        success=False,
+                        mensaje="La sede asignada a su área no está activa. Contacte al administrador."
+                    )
+            elif unidad_usuario and not unidad_usuario.sede_id:
+                return GeolocalizacionResponse(
+                    success=False,
+                    mensaje="Su área no tiene una sede asignada para geolocalización. Contacte al administrador."
+                )
+        
         # Buscar sedes activas
         sedes = db.query(Sede).filter(
             Sede.activo == True,
             Sede.empresa_id == current_user.empresa_id
         ).all() if current_user.empresa_id else []
+        
+        if not sedes:
+            return GeolocalizacionResponse(
+                success=False,
+                mensaje="No hay sedes configuradas para esta empresa."
+            )
         
         # Encontrar la sede más cercana
         sede_cercana = None
@@ -367,6 +398,17 @@ async def registrar_por_geolocalizacion(
             if distancia < distancia_minima:
                 distancia_minima = distancia
                 sede_cercana = sede
+        
+        # 🆕 Validar que la sede detectada coincida con la sede asignada al área
+        if sede_asignada and sede_cercana:
+            if str(sede_asignada.id) != str(sede_cercana.id):
+                return GeolocalizacionResponse(
+                    success=False,
+                    distancia=distancia_minima,
+                    dentro_del_radio=False,
+                    sede_nombre=sede_cercana.nombre,
+                    mensaje=f"No puede registrar en '{sede_cercana.nombre}'. Su área pertenece a '{sede_asignada.nombre}'."
+                )
         
         # Validar distancia
         radio_maximo = sede_cercana.radio_permitido if sede_cercana else (config.radio_tolerancia_default if config else 50)
@@ -427,7 +469,7 @@ async def registrar_por_geolocalizacion(
         db.commit()
         db.refresh(asistencia)
         
-        logger.info(f"Registro por geolocalización: {personal.nombre} - {tipo} - Distancia: {distancia_minima:.0f}m")
+        logger.info(f"Registro por geolocalización: {personal.nombre} - {tipo} - Distancia: {distancia_minima:.0f}m - Sede: {sede_cercana.nombre if sede_cercana else 'N/A'}")
         
         return GeolocalizacionResponse(
             success=True,
@@ -441,7 +483,7 @@ async def registrar_por_geolocalizacion(
             distancia=distancia_minima if sede_cercana else 0,
             dentro_del_radio=dentro_del_radio,
             sede_nombre=sede_cercana.nombre if sede_cercana else None,
-            mensaje=f"Asistencia {tipo} registrada correctamente"
+            mensaje=f"Asistencia {tipo} registrada correctamente en {sede_cercana.nombre if sede_cercana else 'sede'}"
         )
         
     except HTTPException:
@@ -471,7 +513,6 @@ async def obtener_estado_geolocalizacion(
                 config=None
             )
         
-        # Último registro
         ultimo = db.query(Asistencia).filter(
             Asistencia.personal_id == current_user.personal_id,
             Asistencia.tipo_registro == "GEOLOCALIZACION"
@@ -487,7 +528,6 @@ async def obtener_estado_geolocalizacion(
                 "hora": ultimo.timestamp.strftime("%H:%M:%S")
             }
         
-        # Configuración
         config = None
         if current_user.empresa_id:
             config_data = db.query(ConfigGeolocalizacion).filter(

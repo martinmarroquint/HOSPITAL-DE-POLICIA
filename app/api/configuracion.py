@@ -4,10 +4,10 @@ API de Configuración Dinámica
 Endpoints para gestionar la configuración del sistema
 CADA EMPRESA TIENE SU PROPIA CONFIGURACIÓN
 CORREGIDO: Conversión de tipos a minúsculas en guardar_campos_personal
-INCLUYE: Geolocalización GPS - Configuración de sedes y parámetros
+INCLUYE: Geolocalización GPS - Configuración de sedes, parámetros y asignación por unidad
 """
 
-from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File
+from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File, Body
 from sqlalchemy.orm import Session
 from typing import List, Optional, Dict, Any
 from uuid import UUID, uuid4
@@ -17,7 +17,7 @@ import os
 from app.database import get_db
 from app.core.dependencies import require_roles, get_current_active_user, get_current_super_admin
 from app.services.configuracion_service import ConfiguracionService
-from app.models.configuracion import ConfigCliente
+from app.models.configuracion import ConfigCliente, ConfigUnidad
 from app.models.usuario import Usuario
 from app.models.empresa import Empresa
 from app.models.geolocalizacion import Sede, ConfigGeolocalizacion
@@ -224,7 +224,7 @@ async def crear_turnos_masivo(
 
 
 # =====================================================
-# REGLAS - CORREGIDO: Maneja caso vacío
+# REGLAS
 # =====================================================
 
 @router.get("/reglas", tags=["Configuración"])
@@ -416,7 +416,6 @@ async def guardar_campos_personal(
     """Guarda la configuración de campos del personal para la empresa del usuario"""
     empresa_id = get_empresa_id_from_user(current_user)
     
-    # 🎯 CORRECCIÓN: Convertir tipos a minúsculas antes de guardar
     campos_data = []
     for c in data.campos:
         campo_dict = c.model_dump()
@@ -848,4 +847,98 @@ async def eliminar_sede(
     return {
         "success": True,
         "message": "Sede desactivada correctamente"
+    }
+
+
+# =====================================================
+# ASIGNAR SEDE A UNIDAD DEL ORGANIGRAMA
+# =====================================================
+
+@router.put("/organigrama/unidades/{unidad_id}/sede", tags=["Geolocalización"])
+async def asignar_sede_a_unidad(
+    unidad_id: UUID,
+    data: dict = Body(...),
+    db: Session = Depends(get_db),
+    current_user: Usuario = Depends(require_roles(ROLES_ADMIN))
+):
+    """
+    Asigna o quita una sede a una unidad del organigrama.
+    
+    Body:
+    {
+        "sede_id": "uuid" | null,
+        "propagar_hijos": true | false
+    }
+    """
+    unidad = db.query(ConfigUnidad).filter(
+        ConfigUnidad.id == unidad_id
+    ).first()
+    
+    if not unidad:
+        raise HTTPException(status_code=404, detail="Unidad no encontrada")
+    
+    sede_id = data.get('sede_id')
+    propagar_hijos = data.get('propagar_hijos', False)
+    
+    if sede_id:
+        sede = db.query(Sede).filter(Sede.id == sede_id, Sede.activo == True).first()
+        if not sede:
+            raise HTTPException(status_code=404, detail="Sede no encontrada o inactiva")
+    
+    unidad.sede_id = sede_id if sede_id else None
+    
+    propagadas = 0
+    if propagar_hijos:
+        def propagar_recursivo(padre_id):
+            nonlocal propagadas
+            hijas = db.query(ConfigUnidad).filter(
+                ConfigUnidad.padre_id == padre_id
+            ).all()
+            for hija in hijas:
+                hija.sede_id = sede_id if sede_id else None
+                propagadas += 1
+                propagar_recursivo(hija.id)
+        
+        propagar_recursivo(unidad_id)
+    
+    db.commit()
+    
+    return {
+        "success": True,
+        "message": "Sede " + ("asignada" if sede_id else "desasignada") + " correctamente",
+        "unidad_id": str(unidad_id),
+        "sede_id": str(sede_id) if sede_id else None,
+        "hijas_propagadas": propagadas
+    }
+
+
+@router.get("/organigrama/unidades/{unidad_id}/sede", tags=["Geolocalización"])
+async def obtener_sede_unidad(
+    unidad_id: UUID,
+    db: Session = Depends(get_db),
+    current_user: Usuario = Depends(get_current_active_user)
+):
+    """Obtiene la sede asignada a una unidad del organigrama"""
+    unidad = db.query(ConfigUnidad).filter(
+        ConfigUnidad.id == unidad_id
+    ).first()
+    
+    if not unidad:
+        raise HTTPException(status_code=404, detail="Unidad no encontrada")
+    
+    if not unidad.sede_id:
+        return {"unidad_id": str(unidad_id), "sede": None, "tiene_sede": False}
+    
+    sede = db.query(Sede).filter(Sede.id == unidad.sede_id).first()
+    
+    return {
+        "unidad_id": str(unidad_id),
+        "sede": {
+            "id": str(sede.id),
+            "nombre": sede.nombre,
+            "latitud": sede.latitud,
+            "longitud": sede.longitud,
+            "radio_permitido": sede.radio_permitido
+        } if sede else None,
+        "tiene_sede": sede is not None
     }

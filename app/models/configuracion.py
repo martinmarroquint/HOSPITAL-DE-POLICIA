@@ -2,6 +2,7 @@
 Modelos de Configuración Dinámica
 Tablas que almacenan la configuración personalizada de cada cliente
 CADA EMPRESA TIENE SU PROPIA CONFIGURACIÓN
+INCLUYE: sede_id en ConfigUnidad para geolocalización por unidad
 """
 
 from sqlalchemy import Column, String, Integer, Float, Boolean, JSON, DateTime, ForeignKey, Text, Enum
@@ -206,7 +207,7 @@ class ConfigNivelJerarquico(Base):
 # =====================================================
 
 class ConfigUnidad(Base):
-    """Unidades organizacionales configurables"""
+    """Unidades organizacionales configurables - INCLUYE sede_id para geolocalización"""
     __tablename__ = "config_organigrama_unidades"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -215,6 +216,7 @@ class ConfigUnidad(Base):
     codigo = Column(String(50), nullable=True)
     padre_id = Column(UUID(as_uuid=True), ForeignKey("config_organigrama_unidades.id"), nullable=True)
     nivel_id = Column(UUID(as_uuid=True), ForeignKey("config_organigrama_niveles.id"), nullable=True)
+    sede_id = Column(UUID(as_uuid=True), ForeignKey("sedes.id", ondelete="SET NULL"), nullable=True)
     activo = Column(Boolean, default=True)
     orden = Column(Integer, default=0)
     metadata_extra = Column(JSON, default={})
@@ -229,6 +231,7 @@ class ConfigUnidad(Base):
             "codigo": self.codigo,
             "padre_id": str(self.padre_id) if self.padre_id else None,
             "nivel_id": str(self.nivel_id) if self.nivel_id else None,
+            "sede_id": str(self.sede_id) if self.sede_id else None,
             "activo": self.activo,
             "orden": self.orden,
             "metadata_extra": self.metadata_extra or {}
