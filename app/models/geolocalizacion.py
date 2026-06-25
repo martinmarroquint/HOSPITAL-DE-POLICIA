@@ -55,7 +55,7 @@ class RegistroGeolocalizacion(Base):
     __tablename__ = "registros_geolocalizacion"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    asistencia_id = Column(UUID(as_uuid=True), ForeignKey("asistencias.id", ondelete="CASCADE"), nullable=False)
+    asistencia_id = Column(UUID(as_uuid=True), ForeignKey("asistencia.id", ondelete="CASCADE"), nullable=False)
     usuario_id = Column(UUID(as_uuid=True), ForeignKey("usuarios.id", ondelete="CASCADE"), nullable=False)
     sede_id = Column(UUID(as_uuid=True), ForeignKey("sedes.id", ondelete="SET NULL"), nullable=True)
     latitud = Column(Float, nullable=False)
