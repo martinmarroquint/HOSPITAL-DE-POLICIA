@@ -1,5 +1,5 @@
 # app/schemas/__init__.py
-# VERSIÓN ACTUALIZADA - CON CARTERA DE SERVICIOS MÉDICOS + GEOLOCALIZACIÓN
+# VERSIÓN ACTUALIZADA - CON CARTERA DE SERVICIOS MÉDICOS + GEOLOCALIZACIÓN + INVENTARIO
 
 from app.schemas.auth import *
 from app.schemas.personal import *
@@ -11,8 +11,9 @@ from app.schemas.publicacion import *
 from app.schemas.notificacion import *
 from app.schemas.empresa import *
 from app.schemas.cliente import *
-from app.schemas.cartera import *        # Cartera de Servicios Médicos
-from app.schemas.geolocalizacion import * # NUEVO - Geolocalización GPS
+from app.schemas.cartera import *          # Cartera de Servicios Médicos
+from app.schemas.geolocalizacion import *   # NUEVO - Geolocalización GPS
+from app.schemas.inventario import *        # NUEVO - Inventario Logístico
 
 __all__ = [
     # AUTH
@@ -75,4 +76,12 @@ __all__ = [
     "SedeUpdate",
     "SedeResponse",
     "ConfigGeolocalizacionUpdate",
+    
+    # NUEVO - INVENTARIO LOGÍSTICO
+    "CatalogoItemCreate",
+    "CatalogoItemUpdate",
+    "CatalogoItemResponse",
+    "InventarioUnidadCreate",
+    "InventarioUnidadUpdate",
+    "InventarioUnidadResponse",
 ]

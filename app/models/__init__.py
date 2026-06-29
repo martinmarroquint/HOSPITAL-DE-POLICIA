@@ -1,5 +1,5 @@
 # app/models/__init__.py
-# VERSION ACTUALIZADA - CON BIOMETRÍA + METAS + ROTACIONES + CARTERA + PRE-REGISTROS + GEOLOCALIZACIÓN
+# VERSION ACTUALIZADA - CON BIOMETRÍA + METAS + ROTACIONES + CARTERA + PRE-REGISTROS + GEOLOCALIZACIÓN + INVENTARIO
 
 from app.models.usuario import Usuario
 from app.models.personal import Personal
@@ -28,6 +28,10 @@ from app.models.cartera import Especialidad, Programacion, CargaExcel
 
 # NUEVO - Geolocalización GPS
 from app.models.geolocalizacion import Sede, ConfigGeolocalizacion, RegistroGeolocalizacion
+
+# NUEVO - Inventario Logístico
+from app.models.catalogo_item import CatalogoItem
+from app.models.inventario_unidad import InventarioUnidad
 
 # Configuracion dinamica
 from app.models.configuracion import (
@@ -109,6 +113,10 @@ __all__ = [
     "Especialidad",
     "Programacion",
     "CargaExcel",
+    
+    # NUEVO - INVENTARIO LOGÍSTICO
+    "CatalogoItem",
+    "InventarioUnidad",
     
     # CONFIGURACION DINAMICA
     "ConfigTurno",

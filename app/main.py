@@ -1,5 +1,5 @@
 # app/main.py
-# VERSIÓN ACTUALIZADA - CON CARTERA DE SERVICIOS MÉDICOS + GEOLOCALIZACIÓN GPS
+# VERSIÓN ACTUALIZADA - CON CARTERA DE SERVICIOS MÉDICOS + GEOLOCALIZACIÓN GPS + INVENTARIO LOGÍSTICO
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -51,7 +51,7 @@ else:
 app = FastAPI(
     title=settings.PROJECT_NAME,
     version=settings.VERSION,
-    description="API para el Sistema de Gestión Multi-Empresa con jerarquía de roles",
+    description="API para el Sistema de Gestión Multi-Empresa con jerarquía de roles, inventario logístico y geolocalización",
     docs_url=docs_url,
     redoc_url=redoc_url,
     openapi_url=openapi_url,
@@ -75,6 +75,7 @@ app = FastAPI(
         {"name": "Cartera de Servicios", "description": "Portal público de cartera médica y carga de Excel"},
         {"name": "Pre-Registros", "description": "Pre-Registros de Personal - Formulario público + Admin"},
         {"name": "Geolocalización", "description": "Registro de asistencia por GPS con validación de coordenadas"},
+        {"name": "Inventario", "description": "Gestión de inventario logístico - Catálogo maestro + unidades"},
         {"name": "Sistema", "description": "Endpoints de sistema y monitoreo"}
     ]
 )
@@ -162,7 +163,8 @@ modulos_existentes = [
     'clientes', 'empresas', 'sesiones',
     'cartera_servicios',  # Cartera de Servicios Médicos
     'pre_registros',      # Pre-Registros de Personal
-    'geolocalizacion'     # NUEVO - Geolocalización GPS
+    'geolocalizacion',    # Geolocalización GPS
+    'inventario'          # 🆕 Inventario Logístico
 ]
 
 logger.info(f"✅ Módulos cargados: {', '.join(modulos_existentes)}")
@@ -223,7 +225,8 @@ async def system_info():
         "biometria": "Disponible",
         "cartera_servicios": "Disponible",
         "pre_registros": "Disponible",
-        "geolocalizacion": "Disponible",  # NUEVO
+        "geolocalizacion": "Disponible",
+        "inventario": "Disponible",  # 🆕
         "timestamp": datetime.utcnow().isoformat()
     }
 
@@ -267,7 +270,8 @@ async def startup_event():
     logger.info(f"👥 Jerarquía: super_admin → admin_cliente → admin_empresa → jefe_unidad → usuario")
     logger.info(f"🔐 Biometría: DISPONIBLE")
     logger.info(f"🏥 Cartera de Servicios: DISPONIBLE")
-    logger.info(f"📍 Geolocalización GPS: DISPONIBLE")  # NUEVO
+    logger.info(f"📍 Geolocalización GPS: DISPONIBLE")
+    logger.info(f"📦 Inventario Logístico: DISPONIBLE")  # 🆕
     logger.info(f"📝 Pre-Registros: DISPONIBLE")
     logger.info("=" * 60)
     await startup_db_events()
@@ -288,6 +292,6 @@ if __name__ == "__main__":
     import uvicorn
     port = int(os.environ.get("PORT", 8000))
     uvicorn.run(
-        "app.main:app", host="0.0.0.0", port=port,
+        "app.main.py", host="0.0.0.0", port=port,
         reload=settings.DEBUG, log_level="info" if not settings.DEBUG else "debug"
     )
