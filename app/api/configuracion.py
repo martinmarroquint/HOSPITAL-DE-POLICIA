@@ -5,6 +5,7 @@ Endpoints para gestionar la configuración del sistema
 CADA EMPRESA TIENE SU PROPIA CONFIGURACIÓN
 CORREGIDO: Conversión de tipos a minúsculas en guardar_campos_personal
 INCLUYE: Geolocalización GPS - Configuración de sedes, parámetros y asignación por unidad
+INCLUYE: Configuración de Planificación - Modo de Operación
 """
 
 from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File, Body
@@ -124,6 +125,21 @@ def empty_regla_response() -> Dict[str, Any]:
         "created_at": None,
         "updated_at": None,
         "empresa_id": None,
+    }
+
+
+# =====================================================
+# VALOR POR DEFECTO PARA CONFIGURACION DE PLANIFICACION
+# =====================================================
+
+def empty_planificacion_response() -> Dict[str, Any]:
+    """Retorna la configuracion por defecto de planificacion"""
+    return {
+        "modo_aprobacion": "autonomo",
+        "permite_correccion": True,
+        "notificar_pendientes": False,
+        "permite_edicion_admin": False,
+        "requiere_aprobacion": False
     }
 
 
@@ -941,4 +957,58 @@ async def obtener_sede_unidad(
             "radio_permitido": sede.radio_permitido
         } if sede else None,
         "tiene_sede": sede is not None
+    }
+
+
+# =====================================================
+# CONFIGURACION DE PLANIFICACION (MODO DE OPERACION)
+# =====================================================
+
+@router.get("/planificacion", tags=["Configuración"])
+async def get_config_planificacion(
+    db: Session = Depends(get_db),
+    current_user: Usuario = Depends(get_current_active_user)
+):
+    """Obtiene la configuracion del modo de operacion de planificacion"""
+    empresa_id = get_empresa_id_from_user(current_user)
+    
+    if not empresa_id:
+        return empty_planificacion_response()
+    
+    config = db.query(ConfigCliente).filter(
+        ConfigCliente.empresa_id == empresa_id
+    ).first()
+    
+    if config and config.config_planificacion:
+        return config.config_planificacion
+    
+    return empty_planificacion_response()
+
+
+@router.put("/planificacion", tags=["Configuración"])
+async def update_config_planificacion(
+    data: dict = Body(...),
+    db: Session = Depends(get_db),
+    current_user: Usuario = Depends(require_roles(ROLES_ADMIN))
+):
+    """Actualiza la configuracion del modo de operacion de planificacion"""
+    empresa_id = get_empresa_id_from_user(current_user)
+    
+    if not empresa_id:
+        raise HTTPException(status_code=400, detail="Usuario sin empresa asignada")
+    
+    config = get_or_create_config_cliente(db, empresa_id)
+    
+    if not config.config_planificacion:
+        config.config_planificacion = {}
+    
+    config.config_planificacion.update(data)
+    
+    db.commit()
+    db.refresh(config)
+    
+    return {
+        "success": True,
+        "message": "Configuracion de planificacion actualizada",
+        "data": config.config_planificacion
     }

@@ -2,6 +2,7 @@
 Schemas Pydantic para Configuración Dinámica
 CON SOPORTE MULTI-EMPRESA
 INCLUYE: sede_id en UnidadResponse para geolocalización
+INCLUYE: config_planificacion en ClienteConfigResponse
 """
 
 from pydantic import BaseModel, Field, validator
@@ -268,7 +269,7 @@ class CamposPersonalUpdateBulk(BaseModel):
 
 
 # =====================================================
-# CATÁLOGOS
+# CATALOGOS
 # =====================================================
 
 class CatalogoBase(BaseModel):
@@ -293,7 +294,7 @@ class CatalogoResponse(CatalogoBase):
 
 
 # =====================================================
-# ESTADO DE CONFIGURACIÓN
+# ESTADO DE CONFIGURACION
 # =====================================================
 
 class EstadoConfigResponse(BaseModel):
@@ -302,7 +303,7 @@ class EstadoConfigResponse(BaseModel):
 
 
 # =====================================================
-# CONFIGURACIÓN DEL CLIENTE
+# CONFIGURACION DEL CLIENTE
 # =====================================================
 
 class ClienteConfigBase(BaseModel):
@@ -323,7 +324,29 @@ class ClienteConfigUpdate(ClienteConfigBase):
 class ClienteConfigResponse(ClienteConfigBase):
     id: UUID
     empresa_id: Optional[UUID] = None
+    config_planificacion: Optional[Dict[str, Any]] = None
     created_at: Optional[datetime] = None
 
+    class Config:
+        from_attributes = True
+
+
+# =====================================================
+# CONFIGURACION DE PLANIFICACION (MODO DE OPERACION)
+# =====================================================
+
+class PlanificacionConfigBase(BaseModel):
+    modo_aprobacion: Optional[str] = "autonomo"
+    permite_correccion: Optional[bool] = True
+    notificar_pendientes: Optional[bool] = False
+    permite_edicion_admin: Optional[bool] = False
+    requiere_aprobacion: Optional[bool] = False
+
+
+class PlanificacionConfigUpdate(PlanificacionConfigBase):
+    pass
+
+
+class PlanificacionConfigResponse(PlanificacionConfigBase):
     class Config:
         from_attributes = True

@@ -3,6 +3,7 @@ Modelos de Configuración Dinámica
 Tablas que almacenan la configuración personalizada de cada cliente
 CADA EMPRESA TIENE SU PROPIA CONFIGURACIÓN
 INCLUYE: sede_id en ConfigUnidad para geolocalización por unidad
+INCLUYE: config_planificacion en ConfigCliente para modo de operación
 """
 
 from sqlalchemy import Column, String, Integer, Float, Boolean, JSON, DateTime, ForeignKey, Text, Enum
@@ -385,6 +386,7 @@ class ConfigCliente(Base):
     color_fondo = Column(String(7), default='#F1F5F9')
     color_texto = Column(String(7), default='#1F2937')
     pie_pagina = Column(String(200), default='Sistema de Gestión de Personal')
+    config_planificacion = Column(JSON, nullable=True, comment="Configuracion del modo de operacion de planificacion")
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 
@@ -400,4 +402,5 @@ class ConfigCliente(Base):
             "color_fondo": self.color_fondo,
             "color_texto": self.color_texto,
             "pie_pagina": self.pie_pagina,
+            "config_planificacion": self.config_planificacion,
         }
