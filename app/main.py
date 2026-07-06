@@ -1,5 +1,5 @@
 # app/main.py
-# VERSIÓN ACTUALIZADA - CON CARTERA DE SERVICIOS MÉDICOS + GEOLOCALIZACIÓN GPS + INVENTARIO LOGÍSTICO
+# VERSION ACTUALIZADA - CON CARTERA DE SERVICIOS MEDICOS + GEOLOCALIZACION GPS + INVENTARIO LOGISTICO
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -25,7 +25,7 @@ from app.api import api_router
 from app.core.middleware_empresa import EmpresaContextMiddleware
 
 # =====================================================
-# CONFIGURACIÓN DE LOGGING
+# CONFIGURACION DE LOGGING
 # =====================================================
 
 logging.basicConfig(
@@ -36,7 +36,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # =====================================================
-# CREACIÓN DE LA APLICACIÓN FASTAPI
+# CREACION DE LA APLICACION FASTAPI
 # =====================================================
 
 if settings.is_production:
@@ -51,42 +51,42 @@ else:
 app = FastAPI(
     title=settings.PROJECT_NAME,
     version=settings.VERSION,
-    description="API para el Sistema de Gestión Multi-Empresa con jerarquía de roles, inventario logístico y geolocalización",
+    description="API para el Sistema de Gestion Multi-Empresa con jerarquia de roles, inventario logistico, geolocalizacion y Roles de Servicio PNP",
     docs_url=docs_url,
     redoc_url=redoc_url,
     openapi_url=openapi_url,
     openapi_tags=[
-        {"name": "Autenticación", "description": "Endpoints para autenticación y gestión de usuarios"},
-        {"name": "Biometría", "description": "Autenticación biométrica - Huella digital / Face ID"},
-        {"name": "Personal", "description": "Gestión de personal"},
-        {"name": "Planificación", "description": "Planificación de turnos y horarios"},
+        {"name": "Autenticacion", "description": "Endpoints para autenticacion y gestion de usuarios"},
+        {"name": "Biometria", "description": "Autenticacion biometrica - Huella digital / Face ID"},
+        {"name": "Personal", "description": "Gestion de personal"},
+        {"name": "Planificacion", "description": "Planificacion de turnos y horarios"},
         {"name": "Asistencia", "description": "Registro y control de asistencia"},
-        {"name": "Descansos Médicos", "description": "Gestión de descansos médicos"},
+        {"name": "Descansos Medicos", "description": "Gestion de descansos medicos"},
         {"name": "Solicitudes Unificadas", "description": "Solicitudes de vacaciones, permisos y cambios"},
         {"name": "Solicitudes de Cambio", "description": "Solicitudes de cambio de turno"},
-        {"name": "QR", "description": "Generación y validación de códigos QR"},
-        {"name": "Configuración Mensual", "description": "Configuración de parámetros mensuales"},
+        {"name": "QR", "description": "Generacion y validacion de codigos QR"},
+        {"name": "Configuracion Mensual", "description": "Configuracion de parametros mensuales"},
         {"name": "Publicaciones", "description": "Canal interno de comunicaciones"},
         {"name": "Notificaciones", "description": "Centro de notificaciones y alertas"},
-        {"name": "Configuración", "description": "Configuración dinámica del sistema"},
-        {"name": "Clientes", "description": "Panel Super Admin - Gestión de clientes y organizaciones"},
-        {"name": "Empresas", "description": "Panel Super Admin / Admin Cliente - Gestión de empresas"},
-        {"name": "Sesiones", "description": "Gestión de sesiones, clases y eventos"},
-        {"name": "Cartera de Servicios", "description": "Portal público de cartera médica y carga de Excel"},
-        {"name": "Pre-Registros", "description": "Pre-Registros de Personal - Formulario público + Admin"},
-        {"name": "Geolocalización", "description": "Registro de asistencia por GPS con validación de coordenadas"},
-        {"name": "Inventario", "description": "Gestión de inventario logístico - Catálogo maestro + unidades"},
+        {"name": "Configuracion", "description": "Configuracion dinamica del sistema"},
+        {"name": "Clientes", "description": "Panel Super Admin - Gestion de clientes y organizaciones"},
+        {"name": "Empresas", "description": "Panel Super Admin / Admin Cliente - Gestion de empresas"},
+        {"name": "Sesiones", "description": "Gestion de sesiones, clases y eventos"},
+        {"name": "Cartera de Servicios", "description": "Portal publico de cartera medica y carga de Excel"},
+        {"name": "Pre-Registros", "description": "Pre-Registros de Personal - Formulario publico + Admin"},
+        {"name": "Geolocalizacion", "description": "Registro de asistencia por GPS con validacion de coordenadas"},
+        {"name": "Inventario", "description": "Gestion de inventario logistico - Catalogo maestro + unidades"},
         {"name": "Sistema", "description": "Endpoints de sistema y monitoreo"}
     ]
 )
 
 # =====================================================
-# SERVIR ARCHIVOS ESTÁTICOS (LOGOS, FOTOS)
+# SERVIR ARCHIVOS ESTATICOS (LOGOS, FOTOS)
 # =====================================================
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
 # =====================================================
-# CONFIGURACIÓN CORS
+# CONFIGURACION CORS
 # =====================================================
 
 ALLOWED_ORIGINS = [
@@ -104,7 +104,7 @@ if settings.BACKEND_CORS_ORIGINS:
     for origin in settings.BACKEND_CORS_ORIGINS:
         origin_str = str(origin)
         if settings.is_production and "*" in origin_str:
-            logger.warning(f"⚠️ Wildcard CORS ignorado en producción: {origin_str}")
+            logger.warning(f"Wildcard CORS ignorado en produccion: {origin_str}")
             continue
         ALLOWED_ORIGINS.append(origin_str)
 
@@ -120,7 +120,7 @@ app.add_middleware(
     max_age=86400,
 )
 
-logger.info(f"✅ CORS configurado con {len(ALLOWED_ORIGINS)} orígenes")
+logger.info(f"CORS configurado con {len(ALLOWED_ORIGINS)} origenes")
 
 # =====================================================
 # OTROS MIDDLEWARES
@@ -134,7 +134,7 @@ app.add_middleware(
 
 # MIDDLEWARE MULTI-EMPRESA
 app.add_middleware(EmpresaContextMiddleware)
-logger.info("✅ Middleware multi-empresa registrado")
+logger.info("Middleware multi-empresa registrado")
 
 # =====================================================
 # MIDDLEWARE DE MONITOREO
@@ -154,26 +154,26 @@ async def monitor_performance(request: Request, call_next):
 
 app.include_router(api_router, prefix=settings.API_V1_PREFIX)
 
-# Módulos cargados (para diagnóstico)
+# Modulos cargados (para diagnostico)
 modulos_existentes = [
     'auth', 'biometric',
     'personal', 'planificacion', 'asistencia',
     'descansos_medicos', 'solicitudes_cambio', 'qr', 'configuracion_mensual',
     'publicaciones', 'notificaciones', 'configuracion',
     'clientes', 'empresas', 'sesiones',
-    'cartera_servicios',  # Cartera de Servicios Médicos
-    'pre_registros',      # Pre-Registros de Personal
-    'geolocalizacion',    # Geolocalización GPS
-    'inventario'          # 🆕 Inventario Logístico
+    'cartera_servicios',
+    'pre_registros',
+    'geolocalizacion',
+    'inventario'
 ]
 
-logger.info(f"✅ Módulos cargados: {', '.join(modulos_existentes)}")
+logger.info(f"Modulos cargados: {', '.join(modulos_existentes)}")
 
 # =====================================================
-# ENDPOINTS DE DIAGNÓSTICO
+# ENDPOINTS DE DIAGNOSTICO
 # =====================================================
 
-@app.api_route("/", methods=["GET", "HEAD"], tags=["Sistema"], summary="Información del sistema")
+@app.api_route("/", methods=["GET", "HEAD"], tags=["Sistema"], summary="Informacion del sistema")
 async def root():
     return {
         "message": settings.PROJECT_NAME,
@@ -218,7 +218,7 @@ async def system_info():
         "environment": settings.ENVIRONMENT,
         "jerarquia": {
             "roles": ["super_admin", "admin_cliente", "admin_empresa", "jefe_unidad", "usuario", "visitante"],
-            "estructura": "super_admin → clientes → empresas → unidades"
+            "estructura": "super_admin -> clientes -> empresas -> unidades"
         },
         "cors_origins": ALLOWED_ORIGINS,
         "modulos": modulos_existentes,
@@ -226,7 +226,7 @@ async def system_info():
         "cartera_servicios": "Disponible",
         "pre_registros": "Disponible",
         "geolocalizacion": "Disponible",
-        "inventario": "Disponible",  # 🆕
+        "inventario": "Disponible",
         "timestamp": datetime.utcnow().isoformat()
     }
 
@@ -247,7 +247,7 @@ async def custom_404_handler(request: Request, exc):
 @app.exception_handler(500)
 async def custom_500_handler(request: Request, exc):
     error_id = datetime.utcnow().strftime("%Y%m%d%H%M%S%f")
-    logger.error(f"❌ Error 500 [{error_id}] en {request.method} {request.url.path}: {str(exc)}")
+    logger.error(f"Error 500 [{error_id}] en {request.method} {request.url.path}: {str(exc)}")
     logger.error(f"   Traceback: {traceback.format_exc()}")
     return JSONResponse(status_code=500, content={
         "error": "Internal Server Error",
@@ -263,30 +263,30 @@ async def custom_500_handler(request: Request, exc):
 @app.on_event("startup")
 async def startup_event():
     logger.info("=" * 60)
-    logger.info(f"🚀 INICIANDO {settings.PROJECT_NAME} v{settings.VERSION}")
-    logger.info(f"🔧 Modo: {settings.ENVIRONMENT.upper()}")
-    logger.info(f"🌐 CORS orígenes: {len(ALLOWED_ORIGINS)}")
-    logger.info(f"🏢 Middleware multi-empresa: ACTIVO")
-    logger.info(f"👥 Jerarquía: super_admin → admin_cliente → admin_empresa → jefe_unidad → usuario")
-    logger.info(f"🔐 Biometría: DISPONIBLE")
-    logger.info(f"🏥 Cartera de Servicios: DISPONIBLE")
-    logger.info(f"📍 Geolocalización GPS: DISPONIBLE")
-    logger.info(f"📦 Inventario Logístico: DISPONIBLE")  # 🆕
-    logger.info(f"📝 Pre-Registros: DISPONIBLE")
+    logger.info(f"INICIANDO {settings.PROJECT_NAME} v{settings.VERSION}")
+    logger.info(f"Modo: {settings.ENVIRONMENT.upper()}")
+    logger.info(f"CORS origenes: {len(ALLOWED_ORIGINS)}")
+    logger.info(f"Middleware multi-empresa: ACTIVO")
+    logger.info(f"Jerarquia: super_admin -> admin_cliente -> admin_empresa -> jefe_unidad -> usuario")
+    logger.info(f"Biometria: DISPONIBLE")
+    logger.info(f"Cartera de Servicios: DISPONIBLE")
+    logger.info(f"Geolocalizacion GPS: DISPONIBLE")
+    logger.info(f"Inventario Logistico: DISPONIBLE")
+    logger.info(f"Pre-Registros: DISPONIBLE")
     logger.info("=" * 60)
     await startup_db_events()
     db_connected, _ = check_db_connection()
     if db_connected:
-        logger.info("✅ Sistema listo para recibir peticiones")
+        logger.info("Sistema listo para recibir peticiones")
     else:
-        logger.warning("⚠️ Sistema iniciado SIN conexión a base de datos")
+        logger.warning("Sistema iniciado SIN conexion a base de datos")
     logger.info("=" * 60)
 
 @app.on_event("shutdown")
 async def shutdown_event():
-    logger.info(f"🛑 DETENIENDO {settings.PROJECT_NAME}")
+    logger.info(f"DETENIENDO {settings.PROJECT_NAME}")
     await shutdown_db_events()
-    logger.info("✅ Aplicación detenida correctamente")
+    logger.info("Aplicacion detenida correctamente")
 
 if __name__ == "__main__":
     import uvicorn

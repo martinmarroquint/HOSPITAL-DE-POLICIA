@@ -1,5 +1,6 @@
 # app/api/__init__.py
-# VERSIÓN ACTUALIZADA - CON BIOMETRÍA + CLIENTES, EMPRESAS, SESIONES, CARTERA, CONFIGURACIÓN DINÁMICA, PRE-REGISTROS, GEOLOCALIZACIÓN E INVENTARIO
+# VERSION ACTUALIZADA - CON BIOMETRIA + CLIENTES, EMPRESAS, SESIONES, CARTERA, CONFIGURACION DINAMICA, PRE-REGISTROS, GEOLOCALIZACION, INVENTARIO
+# OCR ELIMINADO - Ahora funciona independientemente en el frontend con Google Sheets
 
 from fastapi import APIRouter
 from app.api import (
@@ -18,31 +19,31 @@ from app.api import (
     empresas,
     clientes,
     sesiones,
-    cartera,           # Cartera de Servicios Médicos
-    pre_registros,     # Pre-Registros de Personal
-    geolocalizacion,   # Geolocalización GPS
-    inventario,        # Inventario Logístico
+    cartera,
+    pre_registros,
+    geolocalizacion,
+    inventario,
 )
 
 api_router = APIRouter()
 
-# Autenticación y Usuarios
-api_router.include_router(auth.router, prefix="/auth", tags=["Autenticación"])
+# Autenticacion y Usuarios
+api_router.include_router(auth.router, prefix="/auth", tags=["Autenticacion"])
 
-# Biometría - Huella digital / Face ID
-api_router.include_router(biometric.router, prefix="/auth", tags=["Biometría"])
+# Biometria - Huella digital / Face ID
+api_router.include_router(biometric.router, prefix="/auth", tags=["Biometria"])
 
 # Personal
 api_router.include_router(personal.router, prefix="/personal", tags=["Personal"])
 
-# Planificación
-api_router.include_router(planificacion.router, prefix="/planificacion", tags=["Planificación"])
+# Planificacion
+api_router.include_router(planificacion.router, prefix="/planificacion", tags=["Planificacion"])
 
 # Asistencia
 api_router.include_router(asistencia.router, prefix="/asistencia", tags=["Asistencia"])
 
-# Descansos Médicos
-api_router.include_router(descansos_medicos.router, prefix="/dm", tags=["Descansos Médicos"])
+# Descansos Medicos
+api_router.include_router(descansos_medicos.router, prefix="/dm", tags=["Descansos Medicos"])
 
 # Solicitudes
 api_router.include_router(solicitudes_cambio.router, prefix="/solicitudes", tags=["Solicitudes de Cambio"])
@@ -56,31 +57,29 @@ api_router.include_router(publicaciones.router, prefix="/publicaciones", tags=["
 # Notificaciones
 api_router.include_router(notificaciones.router, prefix="/notificaciones", tags=["Notificaciones"])
 
-# Configuración dinámica
-api_router.include_router(configuracion.router, prefix="/config", tags=["Configuración"])
+# Configuracion dinamica
+api_router.include_router(configuracion.router, prefix="/config", tags=["Configuracion"])
 
-# Gestión de Clientes (Panel Super Admin)
+# Gestion de Clientes (Panel Super Admin)
 api_router.include_router(clientes.router, prefix="/clientes", tags=["Clientes"])
 
-# Gestión de Empresas (Panel Super Admin + Admin Cliente)
+# Gestion de Empresas (Panel Super Admin + Admin Cliente)
 api_router.include_router(empresas.router, prefix="/empresas", tags=["Empresas"])
 
 # Sesiones y Clases (Check-in de visitantes)
 api_router.include_router(sesiones.router, prefix="/sesiones", tags=["Sesiones"])
 
-# Cartera de Servicios Médicos (Portal Público + Carga Excel)
+# Cartera de Servicios Medicos (Portal Publico + Carga Excel)
 api_router.include_router(cartera.router, prefix="/cartera", tags=["Cartera de Servicios"])
 
-# Pre-Registros de Personal (Formulario público + Admin)
+# Pre-Registros de Personal (Formulario publico + Admin)
 api_router.include_router(pre_registros.router, prefix="/pre-registro", tags=["Pre-Registros"])
 
-# CORREGIDO: Geolocalización GPS - SIN prefijo adicional
-api_router.include_router(geolocalizacion.router, tags=["Geolocalización"])
+# Geolocalizacion GPS
+api_router.include_router(geolocalizacion.router, tags=["Geolocalizacion"])
 
-# 🆕 Inventario Logístico
+# Inventario Logistico
 api_router.include_router(inventario.router, prefix="/inventario", tags=["Inventario"])
-
-# ⚠️ configuracion_mensual se incluye directamente en main.py
 
 __all__ = [
     'auth',
