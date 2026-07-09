@@ -76,6 +76,7 @@ class ExamenCreate(BaseModel):
     descripcion: str = ""
     tiempo_limite: int = 60
     puntaje_aprobacion: float = 60.0
+    intentos_permitidos: int = 1
     configuracion: ConfiguracionExamen = ConfiguracionExamen()
     preguntas: List[PreguntaCreate] = []
 
@@ -85,6 +86,7 @@ class ExamenUpdate(BaseModel):
     tiempo_limite: Optional[int] = None
     puntaje_aprobacion: Optional[float] = None
     estado: Optional[str] = None
+    intentos_permitidos: Optional[int] = None
     configuracion: Optional[ConfiguracionExamen] = None
 
 class ExamenResponse(BaseModel):
@@ -96,6 +98,8 @@ class ExamenResponse(BaseModel):
     puntaje_aprobacion: float
     estado: str
     configuracion: Optional[Dict] = None
+    total_preguntas: int = 0
+    intentos_permitidos: int = 1
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
 

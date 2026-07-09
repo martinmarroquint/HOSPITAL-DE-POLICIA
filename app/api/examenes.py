@@ -1,5 +1,5 @@
 # back/app/api/examenes.py
-# VERSION COMPLETA - CON ALUMNOS EN BASE DE DATOS + SOPORTE PARA FRASES
+# VERSION COMPLETA - CON total_preguntas E intentos_permitidos
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
@@ -148,6 +148,7 @@ def crear_examen(data: ExamenCreate, db: Session = Depends(get_db)):
         tiempo_limite=data.tiempo_limite,
         puntaje_aprobacion=data.puntaje_aprobacion,
         configuracion=data.configuracion.model_dump() if data.configuracion else {},
+        intentos_permitidos=data.intentos_permitidos,
         estado='BORRADOR'
     )
     db.add(examen)
@@ -177,7 +178,8 @@ def crear_examen(data: ExamenCreate, db: Session = Depends(get_db)):
             longitud_minima=pregunta_data.longitud_minima,
             rubrica=pregunta_data.rubrica,
         )
-    db.add(pregunta)
+        db.add(pregunta)
+    
     db.commit()
     db.refresh(examen)
     return examen
@@ -245,6 +247,16 @@ def guardar_resultado(data: ResultadoCreate, db: Session = Depends(get_db)):
     examen = db.query(Examen).filter(Examen.id == data.examen_id).first()
     if not examen:
         raise HTTPException(status_code=404, detail="Examen no encontrado")
+    
+    # Verificar intentos del alumno
+    if examen.intentos_permitidos > 0:
+        intentos_actuales = db.query(ResultadoExamen).filter(
+            ResultadoExamen.examen_id == data.examen_id,
+            ResultadoExamen.alumno_id == data.alumno_id
+        ).count()
+        
+        if intentos_actuales >= examen.intentos_permitidos:
+            raise HTTPException(status_code=400, detail="Ya alcanzó el límite de intentos permitidos")
     
     resultado = ResultadoExamen(
         id=str(uuid.uuid4()),
