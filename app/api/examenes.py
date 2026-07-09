@@ -1,5 +1,5 @@
 # back/app/api/examenes.py
-# VERSION COMPLETA - CON ALUMNOS EN BASE DE DATOS
+# VERSION COMPLETA - CON ALUMNOS EN BASE DE DATOS + SOPORTE PARA FRASES
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
@@ -68,10 +68,8 @@ def buscar_alumnos(
 @router.post("/alumnos", status_code=201)
 def guardar_alumnos(data: List[dict], db: Session = Depends(get_db)):
     """Reemplaza todos los alumnos con la nueva lista"""
-    # Eliminar todos los existentes
     db.query(AlumnoExamen).delete()
     
-    # Insertar los nuevos
     for alumno in data:
         nuevo = AlumnoExamen(
             id=str(uuid.uuid4()),
@@ -168,11 +166,12 @@ def crear_examen(data: ExamenCreate, db: Session = Depends(get_db)):
             opcion_d=pregunta_data.opcion_d,
             opcion_e=pregunta_data.opcion_e,
             respuesta_correcta=pregunta_data.respuesta_correcta,
-            afirmaciones=[a.model_dump() for a in pregunta_data.afirmaciones] if pregunta_data.afirmaciones else None,
+            afirmaciones=pregunta_data.afirmaciones if pregunta_data.afirmaciones else None,
             columna_a=pregunta_data.columna_a,
             columna_b=pregunta_data.columna_b,
             elementos=pregunta_data.elementos,
-            segmentos=[s.model_dump() for s in pregunta_data.segmentos] if pregunta_data.segmentos else None,
+            segmentos=pregunta_data.segmentos if pregunta_data.segmentos else None,
+            frases=pregunta_data.frases if pregunta_data.frases else None,
             respuesta_corta=pregunta_data.respuesta_corta,
             respuestas_alternativas=pregunta_data.respuestas_alternativas,
             longitud_minima=pregunta_data.longitud_minima,

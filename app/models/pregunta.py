@@ -32,8 +32,11 @@ class Pregunta(Base):
     # Ordenamiento
     elementos = Column(JSON, nullable=True)
 
-    # Completar espacios
+    # Completar espacios (formato antiguo: segmentos directos)
     segmentos = Column(JSON, nullable=True)  # [{id, tipo: 'texto'|'espacio', texto?, respuesta?, puntos?}]
+    
+    # Completar espacios (formato nuevo: frases con segmentos)
+    frases = Column(JSON, nullable=True)  # [{id, segmentos: [{id, tipo, texto?, respuesta?}], puntos}]
 
     # Respuesta corta
     respuesta_corta = Column(Text, default="")
