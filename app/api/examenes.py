@@ -1,5 +1,5 @@
 # back/app/api/examenes.py
-# VERSION COMPLETA - CON total_preguntas E intentos_permitidos
+# VERSION COMPLETA - CON EDITAR PREGUNTAS + total_preguntas + intentos_permitidos
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
@@ -185,18 +185,55 @@ def crear_examen(data: ExamenCreate, db: Session = Depends(get_db)):
     return examen
 
 
-@router.put("/{examen_id}", response_model=ExamenResponse)
-def actualizar_examen(examen_id: str, data: ExamenUpdate, db: Session = Depends(get_db)):
-    """Actualiza un examen existente"""
+@router.put("/{examen_id}", response_model=ExamenDetailResponse)
+def actualizar_examen(examen_id: str, data: ExamenCreate, db: Session = Depends(get_db)):
+    """Actualiza un examen existente Y sus preguntas (elimina y recrea)"""
     examen = db.query(Examen).filter(Examen.id == examen_id).first()
     if not examen:
         raise HTTPException(status_code=404, detail="Examen no encontrado")
     
-    update_data = data.model_dump(exclude_unset=True)
-    for key, value in update_data.items():
-        setattr(examen, key, value)
-    
+    # Actualizar datos básicos del examen
+    examen.titulo = data.titulo
+    examen.descripcion = data.descripcion
+    examen.tiempo_limite = data.tiempo_limite
+    examen.puntaje_aprobacion = data.puntaje_aprobacion
+    if data.configuracion:
+        examen.configuracion = data.configuracion.model_dump()
+    if data.intentos_permitidos is not None:
+        examen.intentos_permitidos = data.intentos_permitidos
     examen.updated_at = datetime.now(timezone.utc)
+    
+    # Eliminar preguntas existentes
+    db.query(Pregunta).filter(Pregunta.examen_id == examen_id).delete()
+    
+    # Crear nuevas preguntas
+    for i, pregunta_data in enumerate(data.preguntas):
+        pregunta = Pregunta(
+            id=str(uuid.uuid4()),
+            examen_id=examen_id,
+            tipo=pregunta_data.tipo,
+            enunciado=pregunta_data.enunciado,
+            puntos=pregunta_data.puntos,
+            orden=pregunta_data.orden or i,
+            opcion_a=pregunta_data.opcion_a,
+            opcion_b=pregunta_data.opcion_b,
+            opcion_c=pregunta_data.opcion_c,
+            opcion_d=pregunta_data.opcion_d,
+            opcion_e=pregunta_data.opcion_e,
+            respuesta_correcta=pregunta_data.respuesta_correcta,
+            afirmaciones=[a.model_dump() for a in pregunta_data.afirmaciones] if pregunta_data.afirmaciones else None,
+            columna_a=pregunta_data.columna_a,
+            columna_b=pregunta_data.columna_b,
+            elementos=pregunta_data.elementos,
+            segmentos=[s.model_dump() for s in pregunta_data.segmentos] if pregunta_data.segmentos else None,
+            frases=[f.model_dump() for f in pregunta_data.frases] if pregunta_data.frases else None,
+            respuesta_corta=pregunta_data.respuesta_corta,
+            respuestas_alternativas=pregunta_data.respuestas_alternativas,
+            longitud_minima=pregunta_data.longitud_minima,
+            rubrica=pregunta_data.rubrica,
+        )
+        db.add(pregunta)
+    
     db.commit()
     db.refresh(examen)
     return examen
