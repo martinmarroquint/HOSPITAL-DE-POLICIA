@@ -166,19 +166,18 @@ def crear_examen(data: ExamenCreate, db: Session = Depends(get_db)):
             opcion_d=pregunta_data.opcion_d,
             opcion_e=pregunta_data.opcion_e,
             respuesta_correcta=pregunta_data.respuesta_correcta,
-            afirmaciones=pregunta_data.afirmaciones if pregunta_data.afirmaciones else None,
+            afirmaciones=[a.model_dump() for a in pregunta_data.afirmaciones] if pregunta_data.afirmaciones else None,
             columna_a=pregunta_data.columna_a,
             columna_b=pregunta_data.columna_b,
             elementos=pregunta_data.elementos,
-            segmentos=pregunta_data.segmentos if pregunta_data.segmentos else None,
-            frases=pregunta_data.frases if pregunta_data.frases else None,
+            segmentos=[s.model_dump() for s in pregunta_data.segmentos] if pregunta_data.segmentos else None,
+            frases=[f.model_dump() for f in pregunta_data.frases] if pregunta_data.frases else None,
             respuesta_corta=pregunta_data.respuesta_corta,
             respuestas_alternativas=pregunta_data.respuestas_alternativas,
             longitud_minima=pregunta_data.longitud_minima,
             rubrica=pregunta_data.rubrica,
         )
-        db.add(pregunta)
-    
+    db.add(pregunta)
     db.commit()
     db.refresh(examen)
     return examen

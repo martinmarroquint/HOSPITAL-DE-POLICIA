@@ -1,3 +1,4 @@
+# back/app/schemas/examenes.py
 from pydantic import BaseModel, Field
 from typing import Optional, List, Any, Dict
 from datetime import datetime
@@ -14,6 +15,11 @@ class SegmentoCompletar(BaseModel):
     tipo: str  # 'texto' o 'espacio'
     texto: Optional[str] = ""
     respuesta: Optional[str] = ""
+    puntos: Optional[float] = 1.0
+
+class FraseCompletar(BaseModel):
+    id: str
+    segmentos: Optional[List[SegmentoCompletar]] = []
     puntos: Optional[float] = 1.0
 
 class PreguntaBase(BaseModel):
@@ -35,8 +41,10 @@ class PreguntaBase(BaseModel):
     columna_b: Optional[List[str]] = None
     # Ordenamiento
     elementos: Optional[List[str]] = None
-    # Completar
+    # Completar (formato antiguo)
     segmentos: Optional[List[SegmentoCompletar]] = None
+    # Completar (formato nuevo: frases)
+    frases: Optional[List[FraseCompletar]] = None
     # Respuesta corta
     respuesta_corta: Optional[str] = ""
     respuestas_alternativas: Optional[List[str]] = None
@@ -140,7 +148,6 @@ class ResultadoResponse(BaseModel):
         from_attributes = True
 
 
-# ========== RESPUESTAS GENÉRICAS ==========
 class MensajeResponse(BaseModel):
     mensaje: str
     ok: bool = True
