@@ -1,5 +1,5 @@
 # app/main.py
-# VERSION ACTUALIZADA - CON CARTERA DE SERVICIOS MEDICOS + GEOLOCALIZACION GPS + INVENTARIO LOGISTICO
+# VERSION ACTUALIZADA - CON CARTERA DE SERVICIOS MEDICOS + GEOLOCALIZACION GPS + INVENTARIO LOGISTICO + EXAMENES ONLINE
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -8,7 +8,7 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 import logging
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 import traceback
 import os
 
@@ -51,7 +51,7 @@ else:
 app = FastAPI(
     title=settings.PROJECT_NAME,
     version=settings.VERSION,
-    description="API para el Sistema de Gestion Multi-Empresa con jerarquia de roles, inventario logistico, geolocalizacion y Roles de Servicio PNP",
+    description="API para el Sistema de Gestion Multi-Empresa con jerarquia de roles, inventario logistico, geolocalizacion, Roles de Servicio PNP y Examenes Online",
     docs_url=docs_url,
     redoc_url=redoc_url,
     openapi_url=openapi_url,
@@ -76,6 +76,7 @@ app = FastAPI(
         {"name": "Pre-Registros", "description": "Pre-Registros de Personal - Formulario publico + Admin"},
         {"name": "Geolocalizacion", "description": "Registro de asistencia por GPS con validacion de coordenadas"},
         {"name": "Inventario", "description": "Gestion de inventario logistico - Catalogo maestro + unidades"},
+        {"name": "Examenes", "description": "Sistema de examenes online - Creacion, publicacion, rendicion y resultados"},
         {"name": "Sistema", "description": "Endpoints de sistema y monitoreo"}
     ]
 )
@@ -156,15 +157,26 @@ app.include_router(api_router, prefix=settings.API_V1_PREFIX)
 
 # Modulos cargados (para diagnostico)
 modulos_existentes = [
-    'auth', 'biometric',
-    'personal', 'planificacion', 'asistencia',
-    'descansos_medicos', 'solicitudes_cambio', 'qr', 'configuracion_mensual',
-    'publicaciones', 'notificaciones', 'configuracion',
-    'clientes', 'empresas', 'sesiones',
+    'auth',
+    'biometric',
+    'personal',
+    'planificacion',
+    'asistencia',
+    'descansos_medicos',
+    'solicitudes_cambio',
+    'qr',
+    'configuracion_mensual',
+    'publicaciones',
+    'notificaciones',
+    'configuracion',
+    'clientes',
+    'empresas',
+    'sesiones',
     'cartera_servicios',
     'pre_registros',
     'geolocalizacion',
-    'inventario'
+    'inventario',
+    'examenes'
 ]
 
 logger.info(f"Modulos cargados: {', '.join(modulos_existentes)}")
@@ -182,7 +194,7 @@ async def root():
         "status": "operational",
         "jerarquia_roles": ["super_admin", "admin_cliente", "admin_empresa", "jefe_unidad", "usuario", "visitante"],
         "modulos": modulos_existentes,
-        "timestamp": datetime.utcnow().isoformat()
+        "timestamp": datetime.now(timezone.utc).isoformat()
     }
 
 @app.get("/health", tags=["Sistema"], summary="Health check")
@@ -190,7 +202,7 @@ async def health_check():
     db_connected, db_message = check_db_connection()
     return {
         "status": "healthy" if db_connected else "degraded",
-        "timestamp": datetime.utcnow().isoformat(),
+        "timestamp": datetime.now(timezone.utc).isoformat(),
         "version": settings.VERSION,
         "environment": settings.ENVIRONMENT,
         "components": {
@@ -201,7 +213,7 @@ async def health_check():
 
 @app.get("/db-check", tags=["Sistema"])
 async def db_check():
-    return {"database_status": get_db_status(), "timestamp": datetime.utcnow().isoformat()}
+    return {"database_status": get_db_status(), "timestamp": datetime.now(timezone.utc).isoformat()}
 
 @app.get("/ready", tags=["Sistema"])
 async def readiness_check():
@@ -227,7 +239,8 @@ async def system_info():
         "pre_registros": "Disponible",
         "geolocalizacion": "Disponible",
         "inventario": "Disponible",
-        "timestamp": datetime.utcnow().isoformat()
+        "examenes_online": "Disponible",
+        "timestamp": datetime.now(timezone.utc).isoformat()
     }
 
 # =====================================================
@@ -241,19 +254,19 @@ async def custom_404_handler(request: Request, exc):
         "message": "El endpoint solicitado no existe",
         "url": str(request.url),
         "method": request.method,
-        "timestamp": datetime.utcnow().isoformat()
+        "timestamp": datetime.now(timezone.utc).isoformat()
     })
 
 @app.exception_handler(500)
 async def custom_500_handler(request: Request, exc):
-    error_id = datetime.utcnow().strftime("%Y%m%d%H%M%S%f")
+    error_id = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S%f")
     logger.error(f"Error 500 [{error_id}] en {request.method} {request.url.path}: {str(exc)}")
     logger.error(f"   Traceback: {traceback.format_exc()}")
     return JSONResponse(status_code=500, content={
         "error": "Internal Server Error",
         "message": str(exc) if settings.DEBUG else "Error interno del servidor",
         "error_id": error_id,
-        "timestamp": datetime.utcnow().isoformat()
+        "timestamp": datetime.now(timezone.utc).isoformat()
     })
 
 # =====================================================
@@ -273,6 +286,7 @@ async def startup_event():
     logger.info(f"Geolocalizacion GPS: DISPONIBLE")
     logger.info(f"Inventario Logistico: DISPONIBLE")
     logger.info(f"Pre-Registros: DISPONIBLE")
+    logger.info(f"Examenes Online: DISPONIBLE")
     logger.info("=" * 60)
     await startup_db_events()
     db_connected, _ = check_db_connection()
@@ -292,6 +306,9 @@ if __name__ == "__main__":
     import uvicorn
     port = int(os.environ.get("PORT", 8000))
     uvicorn.run(
-        "app.main.py", host="0.0.0.0", port=port,
-        reload=settings.DEBUG, log_level="info" if not settings.DEBUG else "debug"
+        "app.main.py",
+        host="0.0.0.0",
+        port=port,
+        reload=settings.DEBUG,
+        log_level="info" if not settings.DEBUG else "debug"
     )

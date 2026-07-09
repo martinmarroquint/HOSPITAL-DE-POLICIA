@@ -1,5 +1,5 @@
 # app/models/__init__.py
-# VERSION ACTUALIZADA - CON BIOMETRÍA + METAS + ROTACIONES + CARTERA + PRE-REGISTROS + GEOLOCALIZACIÓN + INVENTARIO
+# VERSION ACTUALIZADA - CON BIOMETRÍA + METAS + ROTACIONES + CARTERA + PRE-REGISTROS + GEOLOCALIZACIÓN + INVENTARIO + EXÁMENES
 
 from app.models.usuario import Usuario
 from app.models.personal import Personal
@@ -26,12 +26,18 @@ from app.models.pre_registro import PreRegistro
 # Cartera de Servicios Médicos
 from app.models.cartera import Especialidad, Programacion, CargaExcel
 
-# NUEVO - Geolocalización GPS
+# Geolocalización GPS
 from app.models.geolocalizacion import Sede, ConfigGeolocalizacion, RegistroGeolocalizacion
 
-# NUEVO - Inventario Logístico
+# Inventario Logístico
 from app.models.catalogo_item import CatalogoItem
 from app.models.inventario_unidad import InventarioUnidad
+
+# Exámenes Online
+from app.models.examen import Examen
+from app.models.pregunta import Pregunta
+from app.models.resultado_examen import ResultadoExamen
+from app.models.alumno_examen import AlumnoExamen
 
 # Configuracion dinamica
 from app.models.configuracion import (
@@ -78,7 +84,7 @@ __all__ = [
     "JustificacionAsistencia",
     "QRRegistro",
     
-    # NUEVO - GEOLOCALIZACIÓN GPS
+    # GEOLOCALIZACIÓN GPS
     "Sede",
     "ConfigGeolocalizacion",
     "RegistroGeolocalizacion",
@@ -114,9 +120,15 @@ __all__ = [
     "Programacion",
     "CargaExcel",
     
-    # NUEVO - INVENTARIO LOGÍSTICO
+    # INVENTARIO LOGÍSTICO
     "CatalogoItem",
     "InventarioUnidad",
+    
+    # EXÁMENES ONLINE
+    "Examen",
+    "Pregunta",
+    "ResultadoExamen",
+    "AlumnoExamen",
     
     # CONFIGURACION DINAMICA
     "ConfigTurno",

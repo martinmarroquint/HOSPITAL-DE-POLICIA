@@ -1,5 +1,5 @@
 # app/schemas/__init__.py
-# VERSIÓN ACTUALIZADA - CON CARTERA DE SERVICIOS MÉDICOS + GEOLOCALIZACIÓN + INVENTARIO
+# VERSIÓN ACTUALIZADA - CON CARTERA DE SERVICIOS MÉDICOS + GEOLOCALIZACIÓN + INVENTARIO + EXÁMENES
 
 from app.schemas.auth import *
 from app.schemas.personal import *
@@ -12,8 +12,9 @@ from app.schemas.notificacion import *
 from app.schemas.empresa import *
 from app.schemas.cliente import *
 from app.schemas.cartera import *          # Cartera de Servicios Médicos
-from app.schemas.geolocalizacion import *   # NUEVO - Geolocalización GPS
-from app.schemas.inventario import *        # NUEVO - Inventario Logístico
+from app.schemas.geolocalizacion import *   # Geolocalización GPS
+from app.schemas.inventario import *        # Inventario Logístico
+from app.schemas.examenes import *          # Exámenes Online
 
 __all__ = [
     # AUTH
@@ -68,7 +69,7 @@ __all__ = [
     "ResultadoValidacion", "EspecialidadResponse", "MedicoResponse",
     "CargaResponse", "HorarioResponse",
     
-    # NUEVO - GEOLOCALIZACIÓN GPS
+    # GEOLOCALIZACIÓN GPS
     "GeolocalizacionRequest",
     "GeolocalizacionResponse",
     "EstadoGeolocalizacionResponse",
@@ -77,11 +78,26 @@ __all__ = [
     "SedeResponse",
     "ConfigGeolocalizacionUpdate",
     
-    # NUEVO - INVENTARIO LOGÍSTICO
+    # INVENTARIO LOGÍSTICO
     "CatalogoItemCreate",
     "CatalogoItemUpdate",
     "CatalogoItemResponse",
     "InventarioUnidadCreate",
     "InventarioUnidadUpdate",
     "InventarioUnidadResponse",
+
+    # EXÁMENES ONLINE
+    "AfirmacionVF",
+    "SegmentoCompletar",
+    "PreguntaBase",
+    "PreguntaCreate",
+    "PreguntaResponse",
+    "ConfiguracionExamen",
+    "ExamenCreate",
+    "ExamenUpdate",
+    "ExamenResponse",
+    "ExamenDetailResponse",
+    "ResultadoCreate",
+    "ResultadoResponse",
+    "MensajeResponse",
 ]

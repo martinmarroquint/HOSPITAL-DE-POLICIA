@@ -1,6 +1,5 @@
 # app/api/__init__.py
-# VERSION ACTUALIZADA - CON BIOMETRIA + CLIENTES, EMPRESAS, SESIONES, CARTERA, CONFIGURACION DINAMICA, PRE-REGISTROS, GEOLOCALIZACION, INVENTARIO
-# OCR ELIMINADO - Ahora funciona independientemente en el frontend con Google Sheets
+# VERSION ACTUALIZADA - CON BIOMETRIA + CLIENTES, EMPRESAS, SESIONES, CARTERA, CONFIGURACION DINAMICA, PRE-REGISTROS, GEOLOCALIZACION, INVENTARIO + EXÁMENES
 
 from fastapi import APIRouter
 from app.api import (
@@ -23,6 +22,7 @@ from app.api import (
     pre_registros,
     geolocalizacion,
     inventario,
+    examenes,
 )
 
 api_router = APIRouter()
@@ -81,6 +81,9 @@ api_router.include_router(geolocalizacion.router, tags=["Geolocalizacion"])
 # Inventario Logistico
 api_router.include_router(inventario.router, prefix="/inventario", tags=["Inventario"])
 
+# Examenes Online
+api_router.include_router(examenes.router, prefix="/examenes", tags=["Examenes"])
+
 __all__ = [
     'auth',
     'biometric',
@@ -101,5 +104,6 @@ __all__ = [
     'pre_registros',
     'geolocalizacion',
     'inventario',
+    'examenes',
     'api_router'
 ]
