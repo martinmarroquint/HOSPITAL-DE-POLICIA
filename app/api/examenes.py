@@ -335,3 +335,15 @@ def limpiar_resultados(examen_id: str, db: Session = Depends(get_db)):
     db.query(ResultadoExamen).filter(ResultadoExamen.examen_id == examen_id).delete()
     db.commit()
     return {"mensaje": "Resultados eliminados correctamente", "ok": True}
+
+@router.delete("/resultados/{examen_id}/{alumno_id}", response_model=MensajeResponse)
+def eliminar_resultado_alumno(examen_id: str, alumno_id: str, db: Session = Depends(get_db)):
+    """Elimina el resultado de un alumno específico para reiniciar su intento"""
+    eliminados = db.query(ResultadoExamen).filter(
+        ResultadoExamen.examen_id == examen_id,
+        ResultadoExamen.alumno_id == alumno_id
+    ).delete()
+    db.commit()
+    if eliminados > 0:
+        return {"mensaje": "Intento reiniciado. El alumno puede rendir nuevamente.", "ok": True}
+    raise HTTPException(status_code=404, detail="No se encontró resultado para este alumno")
