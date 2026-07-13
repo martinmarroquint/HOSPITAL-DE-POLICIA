@@ -1,7 +1,41 @@
 # back/app/schemas/examenes.py
+# VERSION ACTUALIZADA - CON SCHEMAS DE GRUPOS
 from pydantic import BaseModel, Field
 from typing import Optional, List, Any, Dict
 from datetime import datetime
+
+
+# ========== GRUPOS ==========
+class AlumnoGrupoSchema(BaseModel):
+    id: str
+    nombre: str
+    dni: Optional[str] = None
+
+class AsistenciaGrupoSchema(BaseModel):
+    alumno_id: str
+    fecha: str
+    presente: bool = True
+
+class GrupoCreate(BaseModel):
+    nombre: str
+    docente_id: str = "default"
+
+class GrupoUpdate(BaseModel):
+    nombre: Optional[str] = None
+    alumnos: Optional[List[dict]] = None
+    asistencias: Optional[List[dict]] = None
+
+class GrupoResponse(BaseModel):
+    id: str
+    nombre: str
+    docente_id: str
+    alumnos: Optional[List[dict]] = []
+    asistencias: Optional[List[dict]] = []
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+
+    class Config:
+        from_attributes = True
 
 
 # ========== PREGUNTA ==========
@@ -70,6 +104,16 @@ class ConfiguracionExamen(BaseModel):
     aleatorizarOpciones: bool = False
     preguntasPorExamen: int = 0
     mostrarUnaSolaPregunta: bool = False
+    mostrar_resultados: bool = True
+    mostrar_respuestas: bool = False
+    detectar_copy_paste: bool = False
+    detectar_tab_change: bool = False
+    mostrar_mejor_nota: bool = False
+    fecha_inicio: Optional[str] = None
+    fecha_fin: Optional[str] = None
+    limite_violaciones: int = 3
+    accion_violaciones: str = "anular"
+    password_examen: Optional[str] = None
 
 class ExamenCreate(BaseModel):
     titulo: str
@@ -79,6 +123,7 @@ class ExamenCreate(BaseModel):
     intentos_permitidos: int = 1
     configuracion: ConfiguracionExamen = ConfiguracionExamen()
     preguntas: List[PreguntaCreate] = []
+    grupo_id: Optional[str] = None  # ← NUEVO: Para asociar examen a un grupo
 
 class ExamenUpdate(BaseModel):
     titulo: Optional[str] = None
@@ -100,6 +145,7 @@ class ExamenResponse(BaseModel):
     configuracion: Optional[Dict] = None
     total_preguntas: int = 0
     intentos_permitidos: int = 1
+    grupo_id: Optional[str] = None  # ← NUEVO
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
 

@@ -1,5 +1,5 @@
 # app/models/__init__.py
-# VERSION ACTUALIZADA - CON BIOMETRÍA + METAS + ROTACIONES + CARTERA + PRE-REGISTROS + GEOLOCALIZACIÓN + INVENTARIO + EXÁMENES
+# VERSION ACTUALIZADA - CON BIOMETRÍA + METAS + ROTACIONES + CARTERA + PRE-REGISTROS + GEOLOCALIZACIÓN + INVENTARIO + EXÁMENES + GRUPOS
 
 from app.models.usuario import Usuario
 from app.models.personal import Personal
@@ -38,6 +38,9 @@ from app.models.examen import Examen
 from app.models.pregunta import Pregunta
 from app.models.resultado_examen import ResultadoExamen
 from app.models.alumno_examen import AlumnoExamen
+
+# Grupos (Clases/Grupos de docentes)
+from app.models.grupo import Grupo
 
 # Configuracion dinamica
 from app.models.configuracion import (
@@ -129,6 +132,9 @@ __all__ = [
     "Pregunta",
     "ResultadoExamen",
     "AlumnoExamen",
+    
+    # GRUPOS (CLASES/GRUPOS DE DOCENTES)
+    "Grupo",
     
     # CONFIGURACION DINAMICA
     "ConfigTurno",

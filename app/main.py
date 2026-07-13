@@ -1,5 +1,5 @@
 # app/main.py
-# VERSION ACTUALIZADA - CON CARTERA DE SERVICIOS MEDICOS + GEOLOCALIZACION GPS + INVENTARIO LOGISTICO + EXAMENES ONLINE
+# VERSION ACTUALIZADA - CON CARTERA DE SERVICIOS MEDICOS + GEOLOCALIZACION GPS + INVENTARIO LOGISTICO + EXAMENES ONLINE + GRUPOS
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -51,7 +51,7 @@ else:
 app = FastAPI(
     title=settings.PROJECT_NAME,
     version=settings.VERSION,
-    description="API para el Sistema de Gestion Multi-Empresa con jerarquia de roles, inventario logistico, geolocalizacion, Roles de Servicio PNP y Examenes Online",
+    description="API para el Sistema de Gestion Multi-Empresa con jerarquia de roles, inventario logistico, geolocalizacion, Roles de Servicio PNP, Grupos de Clases y Examenes Online",
     docs_url=docs_url,
     redoc_url=redoc_url,
     openapi_url=openapi_url,
@@ -77,6 +77,7 @@ app = FastAPI(
         {"name": "Geolocalizacion", "description": "Registro de asistencia por GPS con validacion de coordenadas"},
         {"name": "Inventario", "description": "Gestion de inventario logistico - Catalogo maestro + unidades"},
         {"name": "Examenes", "description": "Sistema de examenes online - Creacion, publicacion, rendicion y resultados"},
+        {"name": "Grupos", "description": "Gestion de grupos/clases - Alumnos, asistencias y materiales"},
         {"name": "Sistema", "description": "Endpoints de sistema y monitoreo"}
     ]
 )
@@ -176,7 +177,8 @@ modulos_existentes = [
     'pre_registros',
     'geolocalizacion',
     'inventario',
-    'examenes'
+    'examenes',
+    'grupos'
 ]
 
 logger.info(f"Modulos cargados: {', '.join(modulos_existentes)}")
@@ -240,6 +242,7 @@ async def system_info():
         "geolocalizacion": "Disponible",
         "inventario": "Disponible",
         "examenes_online": "Disponible",
+        "grupos_clases": "Disponible",
         "timestamp": datetime.now(timezone.utc).isoformat()
     }
 
@@ -287,6 +290,7 @@ async def startup_event():
     logger.info(f"Inventario Logistico: DISPONIBLE")
     logger.info(f"Pre-Registros: DISPONIBLE")
     logger.info(f"Examenes Online: DISPONIBLE")
+    logger.info(f"Grupos de Clases: DISPONIBLE")
     logger.info("=" * 60)
     await startup_db_events()
     db_connected, _ = check_db_connection()
