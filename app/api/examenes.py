@@ -1,11 +1,11 @@
 # back/app/api/examenes.py
-# VERSION COMPLETA - CON GRUPOS + BACKEND CALCULA LA NOTA
+# VERSION COMPLETA FINAL - CON GRUPOS + SINCRONIZACION QR + FILTRO GRUPO_ID + BACKEND CALCULA LA NOTA
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from typing import List, Optional
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 from app.database import get_db
 from app.models.examen import Examen
@@ -22,6 +22,9 @@ from app.schemas.examenes import (
 )
 
 router = APIRouter()
+
+# Constante para expiración del QR
+QR_EXPIRATION_SECONDS = 30
 
 
 # =============================================
@@ -57,7 +60,8 @@ def crear_grupo(data: GrupoCreate, db: Session = Depends(get_db)):
         nombre=data.nombre,
         docente_id=data.docente_id,
         alumnos=[],
-        asistencias=[]
+        asistencias=[],
+        recursos=[]
     )
     db.add(grupo)
     db.commit()
@@ -76,7 +80,7 @@ def obtener_grupo(grupo_id: str, db: Session = Depends(get_db)):
 
 @router.put("/grupos/{grupo_id}", response_model=GrupoResponse)
 def actualizar_grupo(grupo_id: str, data: GrupoUpdate, db: Session = Depends(get_db)):
-    """Actualiza un grupo (alumnos, asistencias, etc.)"""
+    """Actualiza un grupo (alumnos, asistencias, recursos, etc.)"""
     grupo = db.query(Grupo).filter(Grupo.id == grupo_id).first()
     if not grupo:
         raise HTTPException(status_code=404, detail="Grupo no encontrado")
@@ -87,6 +91,8 @@ def actualizar_grupo(grupo_id: str, data: GrupoUpdate, db: Session = Depends(get
         grupo.alumnos = data.alumnos
     if data.asistencias is not None:
         grupo.asistencias = data.asistencias
+    if data.recursos is not None:
+        grupo.recursos = data.recursos
     
     grupo.updated_at = datetime.now(timezone.utc)
     db.commit()
@@ -114,17 +120,176 @@ def guardar_asistencia(grupo_id: str, data: List[AsistenciaGrupoSchema], db: Ses
     
     fecha_actual = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     
-    # Eliminar asistencias previas de hoy
     asistencias_actuales = grupo.asistencias or []
     asistencias_actuales = [a for a in asistencias_actuales if a.get('fecha') != fecha_actual]
     
-    # Agregar nuevas asistencias
     nuevas = [a.model_dump() for a in data]
     grupo.asistencias = asistencias_actuales + nuevas
     grupo.updated_at = datetime.now(timezone.utc)
     
     db.commit()
     return {"mensaje": "Asistencia guardada", "total": len(nuevas), "ok": True}
+
+
+# =============================================
+# RECURSOS DEL GRUPO (CARPETA DOCENTE)
+# =============================================
+
+@router.post("/grupos/{grupo_id}/recursos")
+def agregar_recurso_grupo(grupo_id: str, data: dict, db: Session = Depends(get_db)):
+    """Agrega un recurso (link, PDF, etc.) a la carpeta del grupo"""
+    grupo = db.query(Grupo).filter(Grupo.id == grupo_id).first()
+    if not grupo:
+        raise HTTPException(status_code=404, detail="Grupo no encontrado")
+    
+    recurso = {
+        "id": str(uuid.uuid4()),
+        "nombre": data.get("nombre", "Sin nombre"),
+        "tipo": data.get("tipo", "link"),
+        "url": data.get("url", ""),
+        "descripcion": data.get("descripcion", ""),
+        "fecha": datetime.now(timezone.utc).isoformat()
+    }
+    
+    recursos = grupo.recursos or []
+    recursos.append(recurso)
+    grupo.recursos = recursos
+    grupo.updated_at = datetime.now(timezone.utc)
+    db.commit()
+    
+    return {"mensaje": "Recurso agregado", "recurso": recurso, "ok": True}
+
+
+@router.get("/grupos/{grupo_id}/recursos")
+def listar_recursos_grupo(grupo_id: str, db: Session = Depends(get_db)):
+    """Lista los recursos de un grupo"""
+    grupo = db.query(Grupo).filter(Grupo.id == grupo_id).first()
+    if not grupo:
+        raise HTTPException(status_code=404, detail="Grupo no encontrado")
+    return grupo.recursos or []
+
+
+@router.delete("/grupos/{grupo_id}/recursos/{recurso_id}")
+def eliminar_recurso_grupo(grupo_id: str, recurso_id: str, db: Session = Depends(get_db)):
+    """Elimina un recurso de un grupo"""
+    grupo = db.query(Grupo).filter(Grupo.id == grupo_id).first()
+    if not grupo:
+        raise HTTPException(status_code=404, detail="Grupo no encontrado")
+    
+    recursos = grupo.recursos or []
+    grupo.recursos = [r for r in recursos if r.get("id") != recurso_id]
+    grupo.updated_at = datetime.now(timezone.utc)
+    db.commit()
+    
+    return {"mensaje": "Recurso eliminado", "ok": True}
+
+
+# =============================================
+# SINCRONIZACIÓN CARPETA DOCENTE (QR)
+# =============================================
+
+@router.post("/sincronizar/iniciar")
+def iniciar_sesion_carpeta(data: dict, db: Session = Depends(get_db)):
+    """PC inicia sesión de Carpeta Docente"""
+    session_id = data.get("session_id")
+    if not session_id:
+        raise HTTPException(status_code=400, detail="session_id requerido")
+    
+    return {
+        "session_id": session_id,
+        "estado": "ESPERANDO",
+        "expiracion": (datetime.now(timezone.utc) + timedelta(seconds=QR_EXPIRATION_SECONDS)).isoformat(),
+        "mensaje": "Sesion iniciada. Esperando escaneo del celular..."
+    }
+
+
+@router.get("/sincronizar/estado/{session_id}")
+def consultar_estado_carpeta(session_id: str, db: Session = Depends(get_db)):
+    """PC consulta si el celular ya vinculó un grupo"""
+    grupo = db.query(Grupo).filter(
+        Grupo.session_activo == session_id
+    ).first()
+    
+    if grupo:
+        return {
+            "sincronizado": True,
+            "estado": "VINCULADO",
+            "carpeta": {
+                "id": grupo.id,
+                "nombre": grupo.nombre,
+                "docente": grupo.docente_id or "Docente",
+                "color": "#4F46E5",
+                "recursos": grupo.recursos or []
+            }
+        }
+    
+    return {"sincronizado": False, "estado": "ESPERANDO"}
+
+
+@router.get("/sincronizar/escanear/{session_id}")
+def escanear_qr(session_id: str, db: Session = Depends(get_db)):
+    """Celular escanea el QR. Retorna grupos disponibles"""
+    grupos = db.query(Grupo).order_by(Grupo.created_at.desc()).all()
+    
+    return {
+        "session_id": session_id,
+        "estado": "ESCANEADO",
+        "grupos_disponibles": [
+            {
+                "id": g.id,
+                "nombre": g.nombre,
+                "total_alumnos": len(g.alumnos or []),
+                "total_recursos": len(g.recursos or []),
+                "total_examenes": 0
+            }
+            for g in grupos
+        ]
+    }
+
+
+@router.post("/sincronizar/vincular")
+def vincular_grupo_carpeta(data: dict, db: Session = Depends(get_db)):
+    """Celular selecciona un grupo para proyectar en la PC"""
+    session_id = data.get("session_id")
+    grupo_id = data.get("grupo_id")
+    
+    if not session_id or not grupo_id:
+        raise HTTPException(status_code=400, detail="session_id y grupo_id requeridos")
+    
+    grupo = db.query(Grupo).filter(Grupo.id == grupo_id).first()
+    if not grupo:
+        raise HTTPException(status_code=404, detail="Grupo no encontrado")
+    
+    db.query(Grupo).filter(Grupo.session_activo == session_id).update({"session_activo": None})
+    
+    grupo.session_activo = session_id
+    db.commit()
+    
+    return {
+        "success": True,
+        "mensaje": f"Grupo '{grupo.nombre}' vinculado correctamente",
+        "grupo": {
+            "id": grupo.id,
+            "nombre": grupo.nombre,
+            "docente": grupo.docente_id or "Docente",
+            "color": "#4F46E5",
+            "recursos": grupo.recursos or []
+        }
+    }
+
+
+@router.delete("/sincronizar/cerrar/{session_id}")
+def cerrar_sesion_carpeta(session_id: str, db: Session = Depends(get_db)):
+    """Cierra la sesión de Carpeta Docente"""
+    grupo = db.query(Grupo).filter(
+        Grupo.session_activo == session_id
+    ).first()
+    
+    if grupo:
+        grupo.session_activo = None
+        db.commit()
+    
+    return {"success": True, "mensaje": "Sesion cerrada correctamente"}
 
 
 # =============================================
@@ -207,7 +372,7 @@ def guardar_resultado(data: ResultadoCreate, db: Session = Depends(get_db)):
             ResultadoExamen.alumno_id == data.alumno_id
         ).count()
         if intentos_actuales >= examen.intentos_permitidos:
-            raise HTTPException(status_code=400, detail="Límite de intentos alcanzado")
+            raise HTTPException(status_code=400, detail="Limite de intentos alcanzado")
     
     preguntas = db.query(Pregunta).filter(
         Pregunta.examen_id == data.examen_id
@@ -346,20 +511,21 @@ def eliminar_resultado_alumno(examen_id: str, alumno_id: str, db: Session = Depe
     db.commit()
     if eliminados > 0:
         return {"mensaje": "Intento reiniciado", "ok": True}
-    raise HTTPException(status_code=404, detail="No se encontró resultado")
+    raise HTTPException(status_code=404, detail="No se encontro resultado")
 
 
 # =============================================
-# EXÁMENES
+# EXAMENES
 # =============================================
 
 @router.get("/", response_model=List[ExamenResponse])
 def listar_examenes(
     estado: Optional[str] = Query(None),
     busqueda: Optional[str] = Query(None),
+    grupo_id: Optional[str] = Query(None),
     db: Session = Depends(get_db)
 ):
-    """Lista todos los exámenes con filtros opcionales"""
+    """Lista todos los examenes con filtros opcionales"""
     query = db.query(Examen)
     if estado:
         query = query.filter(Examen.estado == estado)
@@ -368,12 +534,14 @@ def listar_examenes(
             (Examen.titulo.ilike(f"%{busqueda}%")) |
             (Examen.codigo.ilike(f"%{busqueda}%"))
         )
+    if grupo_id:
+        query = query.filter(Examen.grupo_id == grupo_id)
     return query.order_by(Examen.created_at.desc()).all()
 
 
 @router.get("/publicados", response_model=List[ExamenResponse])
 def listar_examenes_publicados(db: Session = Depends(get_db)):
-    """Lista solo exámenes publicados"""
+    """Lista solo examenes publicados"""
     return db.query(Examen).filter(Examen.estado == 'PUBLICADO').order_by(Examen.created_at.desc()).all()
 
 
@@ -517,7 +685,7 @@ def cambiar_estado_examen(
 
 
 # =============================================
-# RUTA DINÁMICA - SIEMPRE AL FINAL
+# RUTA DINAMICA - SIEMPRE AL FINAL
 # =============================================
 
 @router.get("/{examen_id}", response_model=ExamenDetailResponse)
@@ -531,7 +699,7 @@ def obtener_examen(examen_id: str, db: Session = Depends(get_db)):
 
 @router.get("/resultados/{examen_id}/revision/{resultado_id}")
 def obtener_revision(examen_id: str, resultado_id: str, db: Session = Depends(get_db)):
-    """Devuelve el detalle de revisión"""
+    """Devuelve el detalle de revision"""
     resultado = db.query(ResultadoExamen).filter(
         ResultadoExamen.id == resultado_id,
         ResultadoExamen.examen_id == examen_id

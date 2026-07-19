@@ -13,11 +13,12 @@ class Examen(Base):
     codigo = Column(String(50), unique=True, nullable=False, index=True)
     titulo = Column(String(300), nullable=False)
     descripcion = Column(Text, default="")
-    tiempo_limite = Column(Integer, nullable=False, default=60)  # minutos
+    tiempo_limite = Column(Integer, nullable=False, default=60)
     puntaje_aprobacion = Column(Float, default=60.0)
-    estado = Column(String(20), default='BORRADOR')  # BORRADOR, PUBLICADO, CERRADO
+    estado = Column(String(20), default='BORRADOR')
     configuracion = Column(JSON, default=dict)
     intentos_permitidos = Column(Integer, default=1)
+    grupo_id = Column(String(100), nullable=True)  # ← AGREGAR ESTA LINEA
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 

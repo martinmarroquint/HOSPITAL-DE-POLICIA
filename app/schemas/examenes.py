@@ -1,5 +1,5 @@
 # back/app/schemas/examenes.py
-# VERSION ACTUALIZADA - CON SCHEMAS DE GRUPOS
+# VERSION ACTUALIZADA - CON RECURSOS + SINCRONIZACION QR
 from pydantic import BaseModel, Field
 from typing import Optional, List, Any, Dict
 from datetime import datetime
@@ -24,6 +24,7 @@ class GrupoUpdate(BaseModel):
     nombre: Optional[str] = None
     alumnos: Optional[List[dict]] = None
     asistencias: Optional[List[dict]] = None
+    recursos: Optional[List[dict]] = None  # ← AGREGADO
 
 class GrupoResponse(BaseModel):
     id: str
@@ -31,6 +32,8 @@ class GrupoResponse(BaseModel):
     docente_id: str
     alumnos: Optional[List[dict]] = []
     asistencias: Optional[List[dict]] = []
+    recursos: Optional[List[dict]] = []  # ← AGREGADO
+    session_activo: Optional[str] = None  # ← AGREGADO
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
 
@@ -46,7 +49,7 @@ class AfirmacionVF(BaseModel):
 
 class SegmentoCompletar(BaseModel):
     id: str
-    tipo: str  # 'texto' o 'espacio'
+    tipo: str
     texto: Optional[str] = ""
     respuesta: Optional[str] = ""
     puntos: Optional[float] = 1.0
@@ -61,28 +64,20 @@ class PreguntaBase(BaseModel):
     enunciado: str
     puntos: float = 1.0
     orden: int = 0
-    # Opción múltiple
     opcion_a: Optional[str] = ""
     opcion_b: Optional[str] = ""
     opcion_c: Optional[str] = ""
     opcion_d: Optional[str] = ""
     opcion_e: Optional[str] = ""
     respuesta_correcta: Optional[int] = None
-    # Verdadero/Falso
     afirmaciones: Optional[List[AfirmacionVF]] = None
-    # Relacionar
     columna_a: Optional[List[str]] = None
     columna_b: Optional[List[str]] = None
-    # Ordenamiento
     elementos: Optional[List[str]] = None
-    # Completar (formato antiguo)
     segmentos: Optional[List[SegmentoCompletar]] = None
-    # Completar (formato nuevo: frases)
     frases: Optional[List[FraseCompletar]] = None
-    # Respuesta corta
     respuesta_corta: Optional[str] = ""
     respuestas_alternativas: Optional[List[str]] = None
-    # Ensayo
     longitud_minima: Optional[int] = 100
     rubrica: Optional[str] = ""
 
@@ -123,7 +118,7 @@ class ExamenCreate(BaseModel):
     intentos_permitidos: int = 1
     configuracion: ConfiguracionExamen = ConfiguracionExamen()
     preguntas: List[PreguntaCreate] = []
-    grupo_id: Optional[str] = None  # ← NUEVO: Para asociar examen a un grupo
+    grupo_id: Optional[str] = None
 
 class ExamenUpdate(BaseModel):
     titulo: Optional[str] = None
@@ -145,7 +140,7 @@ class ExamenResponse(BaseModel):
     configuracion: Optional[Dict] = None
     total_preguntas: int = 0
     intentos_permitidos: int = 1
-    grupo_id: Optional[str] = None  # ← NUEVO
+    grupo_id: Optional[str] = None
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
 

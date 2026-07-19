@@ -12,5 +12,7 @@ class Grupo(Base):
     docente_id = Column(String(100), nullable=False, default="default")
     alumnos = Column(JSON, default=[])
     asistencias = Column(JSON, default=[])
+    recursos = Column(JSON, default=[])  # ← NUEVO: Recursos compartidos (links, PDFs, etc.)
+    session_activo = Column(String(100), nullable=True)  # ← NUEVO: Session ID para Carpeta Docente QR
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
